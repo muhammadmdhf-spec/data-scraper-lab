@@ -7,12 +7,12 @@ import cv2
 import numpy as np
 
 def check_storage():
-    drives = ["gdrive1:", "gdrive2:", "gdrive3:", "gdrive4:"]
+    drives = ["gdrive:"]
     for drv in drives:
         res = subprocess.run(['rclone', 'lsf', f'{drv}data_store/'], capture_output=True, text=True)
         files = [f for f in res.stdout.strip().split('\n') if f.endswith('.mp4')]
         if len(files) <= 1: return drv, len(files)
-    return "gdrive1:", 99
+    return "gdrive:", 99
 
 def download_source(url):
     cmd = ['yt-dlp', '-f', 'bestvideo[height<=1440]+bestaudio/best', '--merge-output-format', 'mp4', url, '-o', 'source.mp4']
