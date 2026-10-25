@@ -1,0 +1,8 @@
+yt-dlp
+ultralytics
+opencv-python-headless
+scenedetect
+openai-whisper
+requests
+librosa
+numpy
