@@ -4,7 +4,7 @@ import subprocess
 import requests
 import random
 
-DRIVES = ["gdrive1:data_store", "gdrive2:data_store", "gdrive3:data_store", "gdrive4:data_store"]
+DRIVES =  ["gdrive:data_store"]
 FB_API_URL = "https://graph.facebook.com/v19.0"
 
 def get_gemini_caption():
