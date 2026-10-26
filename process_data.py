@@ -15,8 +15,8 @@ def check_storage():
     return "gdrive:", 99
 
 def download_source(url):
-    # Menambahkan Deno sebagai JS runtime untuk memecahkan teka-teki YouTube
-    cmd = ['yt-dlp', '--js-runtimes', 'deno', '--cookies', 'cookies.txt', '-f', 'bestvideo[height<=1440]+bestaudio/best', '--merge-output-format', 'mp4', url, '-o', 'source.mp4']
+    # PERUBAHAN DI SINI: Menambahkan [vcodec!*=av01] agar tidak mendownload format AV1
+    cmd = ['yt-dlp', '--js-runtimes', 'deno', '--cookies', 'cookies.txt', '-f', 'bestvideo[height<=1440][vcodec!*=av01]+bestaudio/best', '--merge-output-format', 'mp4', url, '-o', 'source.mp4']
     subprocess.run(cmd, check=True)
 
 def extract_audio_and_transcribe():
