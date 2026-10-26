@@ -38,7 +38,11 @@ jobs:
         mkdir -p ~/.config/rclone
         echo "$RCLONE_CONF_B64" | base64 -d > ~/.config/rclone/rclone.conf
 
-    
+    - name: Setup YouTube Cookies
+      env:
+        YT_COOKIES_B64: ${{ secrets.YT_COOKIES_B64 }}
+      run: |
+        echo "$YT_COOKIES_B64" | base64 -d > cookies.txt
 
     - name: Execute Core Engine
       env:
@@ -48,4 +52,4 @@ jobs:
         GEMINI_KEY_2: ${{ secrets.GEMINI_KEY_2 }}
         GEMINI_KEY_3: ${{ secrets.GEMINI_KEY_3 }}
       run: |
-       python process_data.py 
+        python process_data.py
