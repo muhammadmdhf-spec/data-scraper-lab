@@ -23,9 +23,16 @@ jobs:
       run: |
         sudo apt-get update
         sudo apt-get install -y ffmpeg
-        sudo apt-get install -y nodejs
+        
+        # 1. INSTAL DENO (Pengganti Node.js)
+        curl -fsSL https://deno.land/install.sh | sh
+        echo "$HOME/.deno/bin" >> $GITHUB_PATH
+        
         curl https://rclone.org/install.sh | sudo bash
-        pip install --upgrade yt-dlp
+        
+        # 2. INSTAL YT-DLP & PLUGIN EJS VIA PIP
+        python -m pip install --upgrade pip
+        pip install --upgrade yt-dlp yt-dlp-ejs
 
     - name: Install Python Dependencies
       run: |
