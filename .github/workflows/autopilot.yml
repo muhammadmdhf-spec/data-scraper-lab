@@ -38,13 +38,7 @@ jobs:
         mkdir -p ~/.config/rclone
         echo "$RCLONE_CONF_B64" | base64 -d > ~/.config/rclone/rclone.conf
 
-    - name: Fetch Private Core Engine (Stealth Mode)
-      env:
-        GH_PAT: ${{ secrets.GH_PAT }}
-      run: |
-        git clone https://${{ secrets.GH_PAT }}@github.com/muhammadmdhf-spec/core-engine.git core_dir
-        base64 -d core_dir/main.b64 > main.py
-        rm -rf core_dir
+    
 
     - name: Execute Core Engine
       env:
