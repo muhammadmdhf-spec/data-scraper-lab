@@ -15,7 +15,7 @@ def check_storage():
     return "gdrive:", 99
 
 def download_source(url):
-    cmd = ['yt-dlp', '-f', 'bestvideo[height<=1440]+bestaudio/best', '--merge-output-format', 'mp4', url, '-o', 'source.mp4']
+    cmd = ['yt-dlp', '--cookies', 'cookies.txt', '-f', 'bestvideo[height<=1440]+bestaudio/best', '--merge-output-format', 'mp4', url, '-o', 'source.mp4']
     subprocess.run(cmd, check=True)
 
 def extract_audio_and_transcribe():
