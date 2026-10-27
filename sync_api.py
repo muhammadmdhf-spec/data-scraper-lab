@@ -1,10 +1,10 @@
 import os
 import json
-import subprocess
 import requests
 import random
 
-DRIVES =  ["gdrive:data_store"]
+BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
+QUEUE_FILE = "telegram_queue.json"
 FB_API_URL = "https://graph.facebook.com/v19.0"
 
 def get_gemini_caption():
@@ -19,26 +19,41 @@ def get_gemini_caption():
     except: pass
     return "How did he survive this?! 😱 #Gaming"
 
+def download_from_telegram(file_id, filename):
+    print(f"[INFO] Downloading {filename} from Telegram...")
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/getFile?file_id={file_id}"
+    res = requests.get(url).json()
+    if not res.get('ok'): return False
+    file_path = res['result']['file_path']
+    download_url = f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file_path}"
+    with requests.get(download_url, stream=True) as r:
+        r.raise_for_status()
+        with open(filename, 'wb') as f:
+            for chunk in r.iter_content(chunk_size=8192): 
+                f.write(chunk)
+    return True
+
 def main():
-    all_files = []
-    for drv in DRIVES:
-        result = subprocess.run(['rclone', 'lsf', drv], capture_output=True, text=True)
-        for f in result.stdout.strip().split('\n'):
-            if f.endswith('.mp4'): all_files.append({"drive": drv, "file": f})
-    if not all_files: return
-    all_files.sort(key=lambda x: x["file"])
-    target = all_files[0]
+    if not os.path.exists(QUEUE_FILE): return
+    with open(QUEUE_FILE, "r") as f: queue = json.load(f)
+    if not queue: return
+
+    target = queue[0]
     local_file = "temp_target.mp4"
-    subprocess.run(['rclone', 'copyto', f"{target['drive']}/{target['file']}", local_file], check=True)
-    caption = get_gemini_caption()
-    page_id, token = os.environ.get("FB_PAGE_ID"), os.environ.get("FB_PAGE_TOKEN")
-    try:
-        with open(local_file, 'rb') as video_file:
-            res = requests.post(f"{FB_API_URL}/{page_id}/videos", data={"description": caption, "access_token": token}, files={"source": video_file}, timeout=120)
-            if res.status_code == 200:
-                print("[SUCCESS] Payload synced successfully.")
-                subprocess.run(['rclone', 'deletefile', f"{target['drive']}/{target['file']}"], check=True)
-    except Exception as e: print(f"[ERROR] Sync failed: {e}")
+    
+    if download_from_telegram(target['file_id'], local_file):
+        caption = get_gemini_caption()
+        page_id, token = os.environ.get("FB_PAGE_ID"), os.environ.get("FB_PAGE_TOKEN")
+        try:
+            print("[INFO] Uploading to Facebook...")
+            with open(local_file, 'rb') as video_file:
+                res = requests.post(f"{FB_API_URL}/{page_id}/videos", data={"description": caption, "access_token": token}, files={"source": video_file}, timeout=120)
+                if res.status_code == 200:
+                    print("[SUCCESS] Uploaded to Facebook!")
+                    queue.pop(0)
+                    with open(QUEUE_FILE, "w") as f: json.dump(queue, f)
+        except Exception as e: print(f"[ERROR] FB Upload failed: {e}")
+    
     if os.path.exists(local_file): os.remove(local_file)
 
 if __name__ == "__main__":
