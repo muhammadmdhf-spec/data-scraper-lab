@@ -12,8 +12,6 @@ CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
 FB_PAGE_ID = os.environ.get("FB_PAGE_ID")
 FB_PAGE_TOKEN = os.environ.get("FB_PAGE_TOKEN")
 FB_API_URL = "https://graph.facebook.com/v19.0"
-
-# NAMA FILE BACKGROUND SESUAI YANG KAMU UPLOAD
 BG_IMAGE = "IMG-20261027-WA6038.jpg"
 
 def send_telegram_alert(message):
@@ -32,16 +30,22 @@ def get_telegram_link():
         if not res.get('ok'): return None, None
         
         for result in reversed(res['result']):
-            if 'message' in result and 'text' in result['message']:
-                text = result['message']['text']
-                chat_id = result['message']['chat']['id']
-                message_id = result['message']['message_id']
+            # INI PERBAIKANNYA: Cek 'channel_post' (pesan di channel) ATAU 'message' (chat biasa)
+            msg = result.get('channel_post') or result.get('message')
+            
+            if msg and 'text' in msg:
+                text = msg['text']
+                chat_id = msg['chat']['id']
+                message_id = msg['message_id']
                 
+                # Cocokkan ID
                 if str(chat_id) == str(CHAT_ID) or str(chat_id) == str(CHAT_ID).replace('-100', ''):
                     if "youtube.com" in text or "youtu.be" in text:
                         match = re.search(r'(https?://\S+)', text)
                         if match:
+                            print(f"[SUCCESS] Link found in Telegram: {match.group(1)}")
                             return match.group(1), message_id
+                            
     except Exception as e:
         print(f"[ERROR] Fetch Telegram: {e}")
     return None, None
@@ -106,7 +110,6 @@ def process_and_upload(matches, caption):
         final_video = f"match_{i}.mp4"
         thumb = f"thumb_{i}.jpg"
         
-        # CEK APAKAH FILE GAMBAR BACKGROUND ADA
         if not os.path.exists(BG_IMAGE):
             print(f"[ERROR] File '{BG_IMAGE}' tidak ditemukan! Pastikan sudah upload ke GitHub.")
             send_telegram_alert(f"❌ Gagal Render: File '{BG_IMAGE}' tidak ada di repo.")
@@ -120,8 +123,8 @@ def process_and_upload(matches, caption):
             
         cmd_ffmpeg = [
             'ffmpeg', '-y', 
-            '-loop', '1', '-i', BG_IMAGE, # Input 0: Background Image
-            '-ss', str(start), '-to', str(end), '-i', 'raw_video.mp4', # Input 1: Video
+            '-loop', '1', '-i', BG_IMAGE, 
+            '-ss', str(start), '-to', str(end), '-i', 'raw_video.mp4', 
             '-filter_complex', filter_complex,
             '-c:v', 'libx265', '-preset', 'fast', '-crf', '23',
             '-c:a', 'aac', '-b:a', '128k', final_video
