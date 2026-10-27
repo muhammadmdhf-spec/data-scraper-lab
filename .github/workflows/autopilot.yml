@@ -2,17 +2,19 @@ name: Automated Data Pipeline
 
 on:
   schedule:
-    - cron: '0 */3 * * *'
+    # Jadwal Upload: 01:00, 05:00, 09:00, 13:00, 18:00, 22:00 WIB (Diubah ke UTC)
     - cron: '0 18,22,2,6,11,15 * * *'
-  workflow_dispatch:
+  workflow_dispatch: # Agar bisa dijalankan manual (Run workflow)
 
 jobs:
   run-pipeline:
     runs-on: ubuntu-latest
+    # Satpam Elit: Hanya bisa dijalankan oleh akun GitHub kamu
     if: github.actor == 'muhammadmdhf-spec' || github.event_name == 'schedule'
 
     steps:
-    - uses: actions/checkout@v4
+    - name: Checkout Repository
+      uses: actions/checkout@v4
 
     - name: Set up Python 3.10
       uses: actions/setup-python@v5
@@ -23,8 +25,10 @@ jobs:
       run: |
         sudo apt-get update
         sudo apt-get install -y ffmpeg
+        # Instal Deno untuk memecahkan teks sandi YouTube
         curl -fsSL https://deno.land/install.sh | sh
         echo "$HOME/.deno/bin" >> $GITHUB_PATH
+        # Update pip dan yt-dlp
         python -m pip install --upgrade pip
         pip install --upgrade yt-dlp yt-dlp-ejs
 
@@ -37,6 +41,7 @@ jobs:
       env:
         YT_COOKIES_B64: ${{ secrets.YT_COOKIES_B64 }}
       run: |
+        # Mengubah Base64 menjadi file cookies.txt
         echo "$YT_COOKIES_B64" | base64 -d > cookies.txt
 
     - name: Execute Core Engine
@@ -49,4 +54,5 @@ jobs:
         TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
         TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
       run: |
+        # Menjalankan mesin utama
         python process_data.py
