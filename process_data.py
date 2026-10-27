@@ -88,7 +88,8 @@ def find_matches():
                 current_start = None
                 
     if not matches:
-        matches.append((10, min(60, len(result['segments'])))
+        # INI BAGIAN YANG SUDAH SAYA PERBAIKI (KURUNG TUTUPNYA DITAMBAH)
+        matches.append((10, min(60, len(result['segments']))))
     return matches
 
 def process_and_upload(matches, caption):
@@ -99,7 +100,6 @@ def process_and_upload(matches, caption):
         thumb = f"thumb_{i}.jpg"
         
         # FILTER FFMPEG: FULL SCREEN, FOKUS KE ATAS (Agar Map & Skor kelihatan)
-        # Kita potong rasio 9:16 secara presisi, dan posisinya di ATAS (y=0)
         filter_complex = "crop=ih*(9/16):ih:(iw-ih*(9/16))/2:0,scale=1080:1920"
             
         cmd_ffmpeg = [
