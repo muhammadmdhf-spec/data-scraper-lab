@@ -13,6 +13,9 @@ FB_PAGE_ID = os.environ.get("FB_PAGE_ID")
 FB_PAGE_TOKEN = os.environ.get("FB_PAGE_TOKEN")
 FB_API_URL = "https://graph.facebook.com/v19.0"
 
+# NAMA FILE BACKGROUND SESUAI YANG KAMU UPLOAD
+BG_IMAGE = "IMG-20261027-WA6038.jpg"
+
 def send_telegram_alert(message):
     print(f"[ALERT] Sending message to Telegram: {message}")
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
@@ -49,16 +52,16 @@ def delete_telegram_message(message_id):
     requests.get(url)
 
 def download_video(url):
-    print("[INFO] Downloading full gameplay video...")
+    print("[INFO] Downloading FULL 4K gameplay video...")
     cmd = ['yt-dlp', '--js-runtimes', 'deno', '--cookies', 'cookies.txt', 
-           '-f', 'bestvideo[height<=1080][vcodec!*=av01]+bestaudio/best', 
+           '-f', 'bestvideo[height<=2160][vcodec!*=av01]+bestaudio/best', 
            '--merge-output-format', 'mp4', url, '-o', 'raw_video.mp4']
     try:
         subprocess.run(cmd, check=True, capture_output=True, text=True)
     except subprocess.CalledProcessError as e:
         error_msg = e.stderr
         if "Sign in to confirm you're not a bot" in error_msg or "cookies" in error_msg.lower():
-            send_telegram_alert("🚨 LAKSAMAN! COOKIE YOUTUBE EXPIRED! Tolong update YT_COOKIES_B64 di GitHub Secrets.")
+            send_telegram_alert("🚨 LAKSAMAN! COOKIE YOUTUBE EXPIRED! Tolong update YT_COOKIES_B64.")
         else:
             send_telegram_alert(f"❌ Gagal mendownload video: {error_msg[:100]}...")
         raise e
@@ -73,38 +76,53 @@ def find_matches():
     
     matches = []
     current_start = None
-    start_words = ["welcome", "welcome to honor of kings", "welcome to hok"]
-    end_words = ["victory", "defeat", "win", "lost", "game over"]
+    
+    start_triggers = ["welcome to honor of kings", "welcome to hok", "let the battle begin", "battle begins in"]
+    end_triggers = ["victory", "defeat", "game over", "destroy"]
 
     for seg in result['segments']:
-        text = seg['text'].lower()
+        text = seg['text'].lower().strip()
         if current_start is None:
-            if any(word in text for word in start_words):
+            if any(trigger in text for trigger in start_triggers):
                 current_start = seg['start']
         else:
-            if any(word in text for word in end_words):
+            if any(trigger in text for trigger in end_triggers):
                 end_time = seg['end']
-                matches.append((current_start, end_time))
+                duration = end_time - current_start
+                if 180 < duration < 1800:
+                    matches.append((current_start, end_time))
                 current_start = None
                 
     if not matches:
-        # INI BAGIAN YANG SUDAH SAYA PERBAIKI (KURUNG TUTUPNYA DITAMBAH)
-        matches.append((10, min(60, len(result['segments']))))
+        print("[WARNING] Tidak ditemukan match. Fallback ke detik 120-420.")
+        matches.append((120, 420))
+
     return matches
 
 def process_and_upload(matches, caption):
     success_count = 0
     for i, (start, end) in enumerate(matches, 1):
-        print(f"[INFO] Rendering Match {i} (Top Focus - Full Screen)...")
+        print(f"[INFO] Rendering Match {i} (Full Screen Template)...")
         final_video = f"match_{i}.mp4"
         thumb = f"thumb_{i}.jpg"
         
-        # FILTER FFMPEG: FULL SCREEN, FOKUS KE ATAS (Agar Map & Skor kelihatan)
-        filter_complex = "crop=ih*(9/16):ih:(iw-ih*(9/16))/2:0,scale=1080:1920"
+        # CEK APAKAH FILE GAMBAR BACKGROUND ADA
+        if not os.path.exists(BG_IMAGE):
+            print(f"[ERROR] File '{BG_IMAGE}' tidak ditemukan! Pastikan sudah upload ke GitHub.")
+            send_telegram_alert(f"❌ Gagal Render: File '{BG_IMAGE}' tidak ada di repo.")
+            return False
+            
+        # FILTER FFMPEG: TEMPLATE BACKGROUND (Full Screen 9:16)
+        filter_complex = (
+            "[1:v]scale=1080:-1[fg];"
+            "[0:v][fg]overlay=(W-w)/2:(H-h)/2:shortest=1"
+        )
             
         cmd_ffmpeg = [
-            'ffmpeg', '-y', '-ss', str(start), '-to', str(end), '-i', 'raw_video.mp4',
-            '-vf', filter_complex,
+            'ffmpeg', '-y', 
+            '-loop', '1', '-i', BG_IMAGE, # Input 0: Background Image
+            '-ss', str(start), '-to', str(end), '-i', 'raw_video.mp4', # Input 1: Video
+            '-filter_complex', filter_complex,
             '-c:v', 'libx265', '-preset', 'fast', '-crf', '23',
             '-c:a', 'aac', '-b:a', '128k', final_video
         ]
@@ -120,7 +138,7 @@ def process_and_upload(matches, caption):
             with open(final_video, 'rb') as vid, open(thumb, 'rb') as th:
                 files = {'source': vid, 'thumb': th}
                 data = {'description': caption, 'access_token': FB_PAGE_TOKEN}
-                res = requests.post(url, data=data, files=files, timeout=300)
+                res = requests.post(url, data=data, files=files, timeout=600)
                 
                 if res.status_code == 200 and 'id' in res.json():
                     print(f"[SUCCESS] Match {i} confirmed uploaded! FB Video ID: {res.json()['id']}")
