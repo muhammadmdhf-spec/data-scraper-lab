@@ -1,94 +1,180 @@
 import subprocess
 import os
-import json
-import whisper
 import requests
-from ultralytics import YOLO
-from scenedetect import detect, ContentDetector
-import cv2
-import numpy as np
+import json
+import random
+import re
+import whisper
 
-# .strip() akan menghapus spasi atau enter yang tidak sengaja di GitHub Secrets
+# --- KONFIGURASI ---
 BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
 CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
-QUEUE_FILE = "telegram_queue.json"
+FB_PAGE_ID = os.environ.get("FB_PAGE_ID")
+FB_PAGE_TOKEN = os.environ.get("FB_PAGE_TOKEN")
+FB_API_URL = "https://graph.facebook.com/v19.0"
 
-def download_source(url):
-    cmd = ['yt-dlp', '--js-runtimes', 'deno', '--cookies', 'cookies.txt', '-f', 'bestvideo[height<=1440][vcodec!*=av01]+bestaudio/best', '--merge-output-format', 'mp4', url, '-o', 'source.mp4']
-    subprocess.run(cmd, check=True)
-
-def extract_audio_and_transcribe():
-    subprocess.run(['ffmpeg', '-y', '-i', 'source.mp4', '-vn', '-acodec', 'pcm_s16le', '-ar', '16000', '-ac', '1', 'audio.wav'], check=True)
-    model = whisper.load_model("base")
-    result = model.transcribe("audio.wav", task="translate") 
-    return result['segments']
-
-def generate_karaoke_ass(segments, start_time, end_time, filename="subs.ass"):
-    with open(filename, 'w', encoding='utf-8') as f:
-        f.write("[Script Info]\nScriptType: v4.00+\nPlayResX: 1080\nPlayResY: 1920\n\n[V4+ Styles]\nFormat: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\n")
-        f.write("Style: Default,Arial,60,&H00FFFFFF,&H0000FFFF,&H00000000,&H80000000,1,0,0,0,100,100,0,0,1,4,0,2,10,10,100,1\n\n[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n")
-        for seg in segments:
-            if seg['start'] >= start_time and seg['end'] <= end_time:
-                s_time = f"0:{int(seg['start']//60):02d}:{seg['start']%60:05.2f}"
-                e_time = f"0:{int(seg['end']//60):02d}:{seg['end']%60:05.2f}"
-                f.write(f"Dialogue: 0,{s_time},{e_time},Default,,0,0,0,,{{\\k50}}{seg['text'].strip().upper()}\n")
-
-def render_vertical_clip(input_path, start, end, output_name, part_num, segments):
-    generate_karaoke_ass(segments, start, end)
-    filter_complex = f"crop=ih*(9/16):ih,scale=1080:1920,drawtext=text='PART {part_num}':x=w-150:y=50:fontsize=40:fontcolor=yellow:box=1:boxcolor=black@0.5,drawtext=text='🔥 PENTA KILL!':x=(w-text_w)/2:y=h/4:fontsize=80:fontcolor=red:enable='between(t,0,3)',subtitles=subs.ass"
-    cmd = ['ffmpeg', '-y', '-ss', str(start), '-to', str(end), '-i', input_path, '-vf', filter_complex, '-c:v', 'libx265', '-preset', 'fast', '-crf', '23', '-c:a', 'aac', '-b:a', '128k', output_name]
-    subprocess.run(cmd, check=True)
-    if os.path.exists("subs.ass"): os.remove("subs.ass")
-
-def send_to_telegram(video_path):
-    print("[INFO] Sending to Telegram Storage...")
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendVideo"
+def send_telegram_alert(message):
+    print(f"[ALERT] Sending message to Telegram: {message}")
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     try:
-        with open(video_path, 'rb') as video:
-            files = {'video': video}
-            data = {'chat_id': CHAT_ID, 'supports_streaming': 'true'}
-            res = requests.post(url, data=data, files=files, timeout=120)
-            if res.status_code == 200:
-                print(f"[SUCCESS] Sent {video_path} to Telegram.")
-                return res.json()['result']['video']['file_id']
-            else:
-                print(f"[ERROR] Telegram Error: {res.text}")
+        requests.post(url, data={"chat_id": CHAT_ID, "text": message}, timeout=10)
     except Exception as e:
-        print(f"[ERROR] Failed to send to Telegram: {e}")
-    return None
+        print(f"[ERROR] Failed to send alert: {e}")
 
-def main():
-    if not os.path.exists("input.txt"): return
-    with open("input.txt", "r") as f: url = f.readline().strip()
-    if not url: return
+def get_telegram_link():
+    print("[INFO] Checking Telegram for new links...")
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/getUpdates?limit=10"
+    try:
+        res = requests.get(url).json()
+        if not res.get('ok'): return None, None
+        
+        for result in reversed(res['result']):
+            if 'message' in result and 'text' in result['message']:
+                text = result['message']['text']
+                chat_id = result['message']['chat']['id']
+                message_id = result['message']['message_id']
+                
+                if str(chat_id) == str(CHAT_ID) or str(chat_id) == str(CHAT_ID).replace('-100', ''):
+                    if "youtube.com" in text or "youtu.be" in text:
+                        match = re.search(r'(https?://\S+)', text)
+                        if match:
+                            return match.group(1), message_id
+    except Exception as e:
+        print(f"[ERROR] Fetch Telegram: {e}")
+    return None, None
+
+def delete_telegram_message(message_id):
+    print(f"[INFO] Deleting message {message_id} from Telegram...")
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/deleteMessage?chat_id={CHAT_ID}&message_id={message_id}"
+    requests.get(url)
+
+def download_video(url):
+    print("[INFO] Downloading full gameplay video...")
+    cmd = ['yt-dlp', '--js-runtimes', 'deno', '--cookies', 'cookies.txt', 
+           '-f', 'bestvideo[height<=1080][vcodec!*=av01]+bestaudio/best', 
+           '--merge-output-format', 'mp4', url, '-o', 'raw_video.mp4']
+    try:
+        subprocess.run(cmd, check=True, capture_output=True, text=True)
+    except subprocess.CalledProcessError as e:
+        error_msg = e.stderr
+        if "Sign in to confirm you're not a bot" in error_msg or "cookies" in error_msg.lower():
+            send_telegram_alert("🚨 LAKSAMAN! COOKIE YOUTUBE EXPIRED! Tolong update YT_COOKIES_B64 di GitHub Secrets.")
+        else:
+            send_telegram_alert(f"❌ Gagal mendownload video: {error_msg[:100]}...")
+        raise e
+
+def find_matches():
+    print("[INFO] Extracting audio to find matches...")
+    subprocess.run(['ffmpeg', '-y', '-i', 'raw_video.mp4', '-vn', '-acodec', 'pcm_s16le', '-ar', '16000', '-ac', '1', 'audio.wav'], check=True)
+    
+    print("[INFO] Whisper is listening...")
+    model = whisper.load_model("base")
+    result = model.transcribe("audio.wav", task="transcribe") 
+    
+    matches = []
+    current_start = None
+    start_words = ["welcome", "welcome to honor of kings", "welcome to hok"]
+    end_words = ["victory", "defeat", "win", "lost", "game over"]
+
+    for seg in result['segments']:
+        text = seg['text'].lower()
+        if current_start is None:
+            if any(word in text for word in start_words):
+                current_start = seg['start']
+        else:
+            if any(word in text for word in end_words):
+                end_time = seg['end']
+                matches.append((current_start, end_time))
+                current_start = None
+                
+    if not matches:
+        matches.append((10, min(60, len(result['segments'])))
+    return matches
+
+def process_and_upload(matches, caption):
+    success_count = 0
+    for i, (start, end) in enumerate(matches, 1):
+        print(f"[INFO] Rendering Match {i} (Top Focus - Full Screen)...")
+        final_video = f"match_{i}.mp4"
+        thumb = f"thumb_{i}.jpg"
+        
+        # FILTER FFMPEG: FULL SCREEN, FOKUS KE ATAS (Agar Map & Skor kelihatan)
+        # Kita potong rasio 9:16 secara presisi, dan posisinya di ATAS (y=0)
+        filter_complex = "crop=ih*(9/16):ih:(iw-ih*(9/16))/2:0,scale=1080:1920"
+            
+        cmd_ffmpeg = [
+            'ffmpeg', '-y', '-ss', str(start), '-to', str(end), '-i', 'raw_video.mp4',
+            '-vf', filter_complex,
+            '-c:v', 'libx265', '-preset', 'fast', '-crf', '23',
+            '-c:a', 'aac', '-b:a', '128k', final_video
+        ]
+        subprocess.run(cmd_ffmpeg, check=True)
+        
+        subprocess.run(['ffmpeg', '-y', '-ss', '03', '-i', final_video, '-vframes', '1', thumb], check=True)
+        
+        print(f"[INFO] Uploading Match {i} to Facebook...")
+        url = f"{FB_API_URL}/{FB_PAGE_ID}/videos"
+        is_uploaded = False
+        
+        try:
+            with open(final_video, 'rb') as vid, open(thumb, 'rb') as th:
+                files = {'source': vid, 'thumb': th}
+                data = {'description': caption, 'access_token': FB_PAGE_TOKEN}
+                res = requests.post(url, data=data, files=files, timeout=300)
+                
+                if res.status_code == 200 and 'id' in res.json():
+                    print(f"[SUCCESS] Match {i} confirmed uploaded! FB Video ID: {res.json()['id']}")
+                    is_uploaded = True
+                else:
+                    print(f"[ERROR] FB Upload Failed: {res.text}")
+                    send_telegram_alert(f"❌ Gagal upload Match {i} ke FB. Token FB mungkin expired.")
+        except Exception as e:
+            print(f"[ERROR] Upload Exception: {e}")
+            
+        if os.path.exists(final_video): os.remove(final_video)
+        if os.path.exists(thumb): os.remove(thumb)
+        if is_uploaded: success_count += 1
+    return success_count > 0
+
+def get_gemini_caption():
+    api_keys = [os.environ.get("GEMINI_KEY_1"), os.environ.get("GEMINI_KEY_2"), os.environ.get("GEMINI_KEY_3")]
+    valid_keys = [k for k in api_keys if k]
+    if not valid_keys: return "Bro, this clutch play is actually insane! 😱🔥 #HonorOfKings #HOK"
+    
+    api_key = random.choice(valid_keys)
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={api_key}"
+    prompt_text = "You are an American TikTok gaming influencer. Write a short, viral, slang-filled clickbait caption for an Honor of Kings pure gameplay video. Use words like 'Bro', 'Insane', 'Clutch', 'W', 'Cracked'. Ask a question to bait comments. Include 3-5 viral gaming hashtags. Max 150 chars."
+    payload = {"contents": [{"parts": [{"text": prompt_text}]}]}
     
     try:
-        download_source(url)
-        scene_list = detect('source.mp4', ContentDetector())
-        clips = [(s[0].get_seconds(), s[1].get_seconds()) for s in scene_list if 10 < (s[1].get_seconds() - s[0].get_seconds()) < 60][:3]
-        if not clips: return
-        segments = extract_audio_and_transcribe()
-        os.makedirs("output", exist_ok=True)
-        
-        queue = []
-        for idx, (start, end) in enumerate(clips, 1):
-            out_name = f"output/part{idx:02d}.mp4"
-            render_vertical_clip("source.mp4", start, end, out_name, idx, segments)
-            file_id = send_to_telegram(out_name)
-            if file_id:
-                queue.append({"file_id": file_id, "name": f"part{idx:02d}.mp4"})
-                
-        with open(QUEUE_FILE, "w") as f:
-            json.dump(queue, f)
-            
-        open("input.txt", "w").close()
-    except Exception as e: print(f"[ERROR] {e}")
+        res = requests.post(url, json=payload, timeout=15)
+        if res.status_code == 200: 
+            res_json = res.json()
+            if 'candidates' in res_json and len(res_json['candidates']) > 0:
+                return res_json['candidates'][0]['content']['parts'][0]['text'].strip().replace('"', '')
+    except Exception as e:
+        print(f"[WARNING] Gemini Exception: {e}")
+    return "Bro, this clutch play is actually insane! 😱🔥 Drop a W in the comments! #HonorOfKings #HOK"
+
+def main():
+    link, msg_id = get_telegram_link()
+    if not link:
+        print("[INFO] No new YouTube links in Telegram. Sleeping.")
+        return
+
+    try:
+        download_video(link)
+        matches = find_matches()
+        if matches:
+            caption = get_gemini_caption()
+            success = process_and_upload(matches, caption)
+            if success and msg_id:
+                delete_telegram_message(msg_id)
+    except Exception as e:
+        print(f"[ERROR] Processing failed: {e}")
     finally:
-        if os.path.exists("source.mp4"): os.remove("source.mp4")
-        if os.path.exists("audio.wav"): os.remove("audio.wav")
-        if os.path.exists("output"):
-            for f in os.listdir("output"): os.remove(os.path.join("output", f))
-            os.rmdir("output")
+        for f in ['raw_video.mp4', 'audio.wav']:
+            if os.path.exists(f): os.remove(f)
 
 if __name__ == "__main__":
     main()
