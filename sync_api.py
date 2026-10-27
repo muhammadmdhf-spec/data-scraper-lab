@@ -3,7 +3,7 @@ import json
 import requests
 import random
 
-BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
+BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
 QUEUE_FILE = "telegram_queue.json"
 FB_API_URL = "https://graph.facebook.com/v19.0"
 
