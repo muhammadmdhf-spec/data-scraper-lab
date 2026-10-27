@@ -8,8 +8,9 @@ from scenedetect import detect, ContentDetector
 import cv2
 import numpy as np
 
-BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
-CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
+# .strip() akan menghapus spasi atau enter yang tidak sengaja di GitHub Secrets
+BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
+CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
 QUEUE_FILE = "telegram_queue.json"
 
 def download_source(url):
@@ -51,7 +52,7 @@ def send_to_telegram(video_path):
                 print(f"[SUCCESS] Sent {video_path} to Telegram.")
                 return res.json()['result']['video']['file_id']
             else:
-                print(f"[ERROR] Telegram Error: {res.text}") # INI AKAN MEMBANTU KITA LIHAT ERRORNYA
+                print(f"[ERROR] Telegram Error: {res.text}")
     except Exception as e:
         print(f"[ERROR] Failed to send to Telegram: {e}")
     return None
