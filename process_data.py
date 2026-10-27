@@ -22,41 +22,45 @@ def send_telegram_alert(message):
     except Exception as e:
         print(f"[ERROR] Failed to send alert: {e}")
 
-def get_telegram_link():
-    print("[INFO] Checking Telegram for new links...")
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/getUpdates?limit=10"
+def delete_telegram_message(message_id, chat_id):
+    print(f"[INFO] Deleting processed link (ID: {message_id}) from Telegram...")
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/deleteMessage?chat_id={chat_id}&message_id={message_id}"
+    requests.get(url)
+
+def get_oldest_telegram_link():
+    print("[INFO] Checking Telegram for oldest link in queue...")
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/getUpdates?limit=100"
     try:
         res = requests.get(url).json()
-        if not res.get('ok'): return None, None
+        if not res.get('ok'): return None, None, None
         
-        for result in reversed(res['result']):
-            # INI PERBAIKANNYA: Cek 'channel_post' (pesan di channel) ATAU 'message' (chat biasa)
+        # FIFO: Baca dari pesan paling lama ke paling baru
+        for result in res['result']:
             msg = result.get('channel_post') or result.get('message')
-            
             if msg and 'text' in msg:
                 text = msg['text']
                 chat_id = msg['chat']['id']
-                message_id = msg['message_id']
+                msg_id = msg['message_id']
+                chat_type = msg['chat']['type'] # 'channel', 'private', 'group', dll.
                 
-                # Cocokkan ID
-                if str(chat_id) == str(CHAT_ID) or str(chat_id) == str(CHAT_ID).replace('-100', ''):
+                # Bisa dari Channel Gudang HOK ATAU dari Chat Pribadi Bot
+                is_from_channel = str(chat_id) == str(CHAT_ID) or str(chat_id) == str(CHAT_ID).replace('-100', '')
+                is_from_private = chat_type == 'private'
+                
+                if is_from_channel or is_from_private:
                     if "youtube.com" in text or "youtu.be" in text:
                         match = re.search(r'(https?://\S+)', text)
                         if match:
-                            print(f"[SUCCESS] Link found in Telegram: {match.group(1)}")
-                            return match.group(1), message_id
+                            print(f"[SUCCESS] Found oldest link: {match.group(1)} (from {chat_type})")
+                            return match.group(1), msg_id, chat_id
                             
     except Exception as e:
         print(f"[ERROR] Fetch Telegram: {e}")
-    return None, None
-
-def delete_telegram_message(message_id):
-    print(f"[INFO] Deleting message {message_id} from Telegram...")
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/deleteMessage?chat_id={CHAT_ID}&message_id={message_id}"
-    requests.get(url)
+    return None, None, None
 
 def download_video(url):
     print("[INFO] Downloading FULL 4K gameplay video...")
+    # -f bestvideo+bestaudio memastikan suara tetap ada!
     cmd = ['yt-dlp', '--js-runtimes', 'deno', '--cookies', 'cookies.txt', 
            '-f', 'bestvideo[height<=2160][vcodec!*=av01]+bestaudio/best', 
            '--merge-output-format', 'mp4', url, '-o', 'raw_video.mp4']
@@ -65,7 +69,7 @@ def download_video(url):
     except subprocess.CalledProcessError as e:
         error_msg = e.stderr
         if "Sign in to confirm you're not a bot" in error_msg or "cookies" in error_msg.lower():
-            send_telegram_alert("🚨 LAKSAMAN! COOKIE YOUTUBE EXPIRED! Tolong update YT_COOKIES_B64.")
+            send_telegram_alert("🚨 LAKSAMAN! COOKIE YOUTUBE EXPIRED! Tolong update YT_COOKIES_B64 di GitHub Secrets.")
         else:
             send_telegram_alert(f"❌ Gagal mendownload video: {error_msg[:100]}...")
         raise e
@@ -111,11 +115,10 @@ def process_and_upload(matches, caption):
         thumb = f"thumb_{i}.jpg"
         
         if not os.path.exists(BG_IMAGE):
-            print(f"[ERROR] File '{BG_IMAGE}' tidak ditemukan! Pastikan sudah upload ke GitHub.")
-            send_telegram_alert(f"❌ Gagal Render: File '{BG_IMAGE}' tidak ada di repo.")
+            print(f"[ERROR] File '{BG_IMAGE}' tidak ditemukan!")
             return False
             
-        # FILTER FFMPEG: TEMPLATE BACKGROUND (Full Screen 9:16)
+        # FILTER FFMPEG: Overlay ke background. Suara di-copy (aac)
         filter_complex = (
             "[1:v]scale=1080:-1[fg];"
             "[0:v][fg]overlay=(W-w)/2:(H-h)/2:shortest=1"
@@ -143,6 +146,7 @@ def process_and_upload(matches, caption):
                 data = {'description': caption, 'access_token': FB_PAGE_TOKEN}
                 res = requests.post(url, data=data, files=files, timeout=600)
                 
+                # Cek ketat: HTTP 200 DAN dapat Video ID
                 if res.status_code == 200 and 'id' in res.json():
                     print(f"[SUCCESS] Match {i} confirmed uploaded! FB Video ID: {res.json()['id']}")
                     is_uploaded = True
@@ -178,22 +182,29 @@ def get_gemini_caption():
     return "Bro, this clutch play is actually insane! 😱🔥 Drop a W in the comments! #HonorOfKings #HOK"
 
 def main():
-    link, msg_id = get_telegram_link()
+    # 1. Langsung ambil link terlama saat bot hidup (baik manual maupun cron)
+    link, msg_id, chat_id = get_oldest_telegram_link()
     if not link:
-        print("[INFO] No new YouTube links in Telegram. Sleeping.")
+        print("[INFO] Antrean kosong. Robot tidur sampai jadwal berikutnya.")
         return
 
     try:
+        # 2. Download 4K + Suara
         download_video(link)
+        
+        # 3. Cari Match & Edit Video
         matches = find_matches()
         if matches:
             caption = get_gemini_caption()
             success = process_and_upload(matches, caption)
+            
+            # 4. HANYA HAPUS LINK JIKA SUKSES UPLOAD KE FB
             if success and msg_id:
-                delete_telegram_message(msg_id)
+                delete_telegram_message(msg_id, chat_id)
     except Exception as e:
         print(f"[ERROR] Processing failed: {e}")
     finally:
+        # Bersihkan file sementara di server
         for f in ['raw_video.mp4', 'audio.wav']:
             if os.path.exists(f): os.remove(f)
 
