@@ -50,6 +50,8 @@ def send_to_telegram(video_path):
             if res.status_code == 200:
                 print(f"[SUCCESS] Sent {video_path} to Telegram.")
                 return res.json()['result']['video']['file_id']
+            else:
+                print(f"[ERROR] Telegram Error: {res.text}") # INI AKAN MEMBANTU KITA LIHAT ERRORNYA
     except Exception as e:
         print(f"[ERROR] Failed to send to Telegram: {e}")
     return None
