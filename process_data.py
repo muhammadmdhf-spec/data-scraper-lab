@@ -4,37 +4,70 @@ import requests
 import json
 import random
 import re
+import datetime
+from playwright.sync_api import sync_playwright
 
 # --- KONFIGURASI ---
 BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
-CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
-FB_PAGE_ID = os.environ.get("FB_PAGE_ID")
-FB_PAGE_TOKEN = os.environ.get("FB_PAGE_TOKEN")
-FB_API_URL = "https://graph.facebook.com/v19.0"
-BG_IMAGE = "IMG-20261027-WA6038.jpg" # NAMA FILE BACKGROUND KAMU
+CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "").strip() # Hanya untuk Channel/Grup
+BG_IMAGE = "IMG-20261027-WA6038.jpg"
+FB_PAGE_ID = "110050601565770" # ID Page Ethan Wayne
+STATE_FILE = "state.json"
 
 def send_telegram_alert(message):
-    print(f"[ALERT] Sending message to Telegram: {message}")
+    print(f"[ALERT] {message}")
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-    try:
+    try: 
         requests.post(url, data={"chat_id": CHAT_ID, "text": message}, timeout=10)
     except Exception as e:
-        print(f"[ERROR] Failed to send alert: {e}")
+        print(f"[ERROR] Gagal kirim notif Telegram: {e}")
 
-def delete_telegram_message(message_id, chat_id):
-    print(f"[INFO] Deleting processed link (ID: {message_id}) from Telegram...")
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/deleteMessage?chat_id={chat_id}&message_id={message_id}"
-    requests.get(url)
+# 🛡️ FITUR 1: AUTO-REMINDER COOKIE (14 HARI FB & 21 HARI YT)
+def check_reminders():
+    today = datetime.date.today()
+    if not os.path.exists(STATE_FILE):
+        with open(STATE_FILE, "w") as f: 
+            json.dump({"start_date": str(today)}, f)
+        return
+    
+    with open(STATE_FILE, "r") as f: 
+        state = json.load(f)
+    
+    if "start_date" not in state:
+        with open(STATE_FILE, "w") as f: 
+            json.dump({"start_date": str(today)}, f)
+        return
+
+    start_date = datetime.datetime.strptime(state["start_date"], "%Y-%m-%d").date()
+    days = (today - start_date).days
+
+    if days == 14:
+        send_telegram_alert("🚨 LAKSAMAN! Sudah 2 MINGGU. Waktunya ganti Cookie Facebook (FB_COOKIES_B64) agar akun aman!")
+    if days == 21:
+        send_telegram_alert("🚨 LAKSAMAN! Sudah 3 MINGGU. Waktunya ganti Cookie YouTube (YT_COOKIES_B64) agar download lancar!")
+
+# 🍪 FITUR 2: DETEKSI COOKIE FB EXPIRED DINI
+def check_fb_cookie_expiry():
+    print("[INFO] Checking FB Cookie Expiry...")
+    if not os.path.exists("fb_cookies.txt"): return False
+    with open("fb_cookies.txt", "r") as f:
+        for line in f:
+            if line.startswith("#") or not line.strip(): continue
+            parts = line.strip().split("\t")
+            if len(parts) == 7 and parts[5] == "c_user": 
+                exp_timestamp = int(parts[4])
+                exp_date = datetime.datetime.fromtimestamp(exp_timestamp)
+                if exp_date < datetime.datetime.now():
+                    send_telegram_alert("🚨 Cookie FB sudah EXPIRED (Berdasarkan Tanggal). Tolong ganti FB_COOKIES_B64!")
+                    return False
+    return True
 
 def get_oldest_telegram_link():
-    print("[INFO] Checking Telegram for oldest link in queue...")
+    print("[INFO] Checking Telegram...")
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/getUpdates?limit=100"
     try:
         res = requests.get(url).json()
-        if not res.get('ok'): return None, None, None
-        
-        # FIFO: Baca dari pesan paling lama ke paling baru
-        for result in res['result']:
+        for result in res.get('result', []):
             msg = result.get('channel_post') or result.get('message')
             if msg and 'text' in msg:
                 text = msg['text']
@@ -42,127 +75,174 @@ def get_oldest_telegram_link():
                 msg_id = msg['message_id']
                 chat_type = msg['chat']['type']
                 
-                is_from_channel = str(chat_id) == str(CHAT_ID) or str(chat_id) == str(CHAT_ID).replace('-100', '')
-                is_from_private = chat_type == 'private'
-                
-                if is_from_channel or is_from_private:
-                    if "youtube.com" in text or "youtu.be" in text:
-                        match = re.search(r'(https?://\S+)', text)
-                        if match:
-                            print(f"[SUCCESS] Found oldest link: {match.group(1)}")
-                            return match.group(1), msg_id, chat_id
-                            
-    except Exception as e:
-        print(f"[ERROR] Fetch Telegram: {e}")
+                if str(chat_id) == str(CHAT_ID) or str(chat_id) == str(CHAT_ID).replace('-100', '') or chat_type == 'private':
+                    match = re.search(r'(https?://(?:www\.)?(?:youtube\.com|youtu\.be)/\S+)', text)
+                    if match: return match.group(1), msg_id, chat_id
+    except Exception as e: 
+        print(f"[ERROR] Telegram: {e}")
     return None, None, None
 
+def delete_telegram_message(msg_id, chat_id):
+    print(f"[INFO] Menghapus link dari Telegram...")
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/deleteMessage?chat_id={chat_id}&message_id={msg_id}"
+    requests.get(url)
+
+def get_yt_metadata(url):
+    print("[INFO] Mengambil Metadata YouTube...")
+    try:
+        cmd = ['yt-dlp', '--dump-json', '--js-runtimes', 'deno', '--cookies', 'cookies.txt', url]
+        result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+        data = json.loads(result.stdout)
+        return data.get('title', 'HOK Gameplay'), data.get('description', '')[:200]
+    except: 
+        return "HOK Gameplay", ""
+
 def download_video(url):
-    print("[INFO] Downloading FULL 4K gameplay video...")
+    print("[INFO] Downloading 4K Video...")
     cmd = ['yt-dlp', '--js-runtimes', 'deno', '--cookies', 'cookies.txt', 
            '-f', 'bestvideo[height<=2160][vcodec!*=av01]+bestaudio/best', 
            '--merge-output-format', 'mp4', url, '-o', 'raw_video.mp4']
-    try:
+    try: 
         subprocess.run(cmd, check=True, capture_output=True, text=True)
-    except subprocess.CalledProcessError as e:
-        error_msg = e.stderr
-        if "Sign in to confirm you're not a bot" in error_msg or "cookies" in error_msg.lower():
-            send_telegram_alert("🚨 LAKSAMAN! COOKIE YOUTUBE EXPIRED! Tolong update YT_COOKIES_B64.")
-        else:
-            send_telegram_alert(f"❌ Gagal mendownload video: {error_msg[:100]}...")
+    except Exception as e:
+        send_telegram_alert("❌ Gagal Download. Cek Cookie YouTube (YT_COOKIES_B64).")
         raise e
 
-def process_and_upload(caption):
-    print(f"[INFO] Rendering FULL Video with Overlay Background...")
-    final_video = "final_match.mp4"
-    thumb = "thumb.jpg"
-    
-    if not os.path.exists(BG_IMAGE):
-        print(f"[ERROR] File '{BG_IMAGE}' tidak ditemukan!")
-        send_telegram_alert(f"❌ Gagal Render: File '{BG_IMAGE}' tidak ada di repo.")
-        return False
-        
-    # FILTER FFMPEG: FULL VIDEO Overlay ke Background
-    filter_complex = (
-        "[1:v]scale=1080:-1[fg];"
-        "[0:v][fg]overlay=(W-w)/2:(H-h)/2:shortest=1"
-    )
-        
-    cmd_ffmpeg = [
-        'ffmpeg', '-y', 
-        '-loop', '1', '-i', BG_IMAGE, 
-        '-i', 'raw_video.mp4', 
-        '-filter_complex', filter_complex,
-        '-c:v', 'libx265', '-preset', 'ultrafast', '-crf', '23',
-        '-c:a', 'aac', '-b:a', '128k', final_video
-    ]
-    subprocess.run(cmd_ffmpeg, check=True)
-    
-    # Generate Thumbnail dari video yang sudah jadi
-    subprocess.run(['ffmpeg', '-y', '-ss', '03', '-i', final_video, '-vframes', '1', thumb], check=True)
-    
-    print(f"[INFO] Uploading FULL Video to Facebook...")
-    url = f"{FB_API_URL}/{FB_PAGE_ID}/videos"
-    is_uploaded = False
-    
-    try:
-        with open(final_video, 'rb') as vid, open(thumb, 'rb') as th:
-            files = {'source': vid, 'thumb': th}
-            data = {'description': caption, 'access_token': FB_PAGE_TOKEN}
-            res = requests.post(url, data=data, files=files, timeout=600)
-            
-            if res.status_code == 200 and 'id' in res.json():
-                print(f"[SUCCESS] Video confirmed uploaded! FB Video ID: {res.json()['id']}")
-                is_uploaded = True
-            else:
-                print(f"[ERROR] FB Upload Failed: {res.text}")
-                send_telegram_alert(f"❌ Gagal upload video ke FB. Token FB mungkin expired.")
-    except Exception as e:
-        print(f"[ERROR] Upload Exception: {e}")
-        
-    if os.path.exists(final_video): os.remove(final_video)
-    if os.path.exists(thumb): os.remove(thumb)
-    
-    return is_uploaded
+def process_video():
+    print("[INFO] Editing Video with Overlay...")
+    if not os.path.exists(BG_IMAGE): 
+        send_telegram_alert("❌ File background tidak ada di repo!")
+        return None
+    filter_complex = "[1:v]scale=1080:-1[fg];[0:v][fg]overlay=(W-w)/2:(H-h)/2:shortest=1"
+    cmd = ['ffmpeg', '-y', '-loop', '1', '-i', BG_IMAGE, '-i', 'raw_video.mp4', 
+           '-filter_complex', filter_complex, '-c:v', 'libx265', '-preset', 'ultrafast', 
+           '-crf', '23', '-c:a', 'aac', '-b:a', '192k', 'final_video.mp4']
+    subprocess.run(cmd, check=True)
+    return "final_video.mp4"
 
-def get_gemini_caption():
+def generate_caption(yt_title, yt_desc):
+    print("[INFO] Membuat Caption Slang Amerika...")
     api_keys = [os.environ.get("GEMINI_KEY_1"), os.environ.get("GEMINI_KEY_2"), os.environ.get("GEMINI_KEY_3")]
     valid_keys = [k for k in api_keys if k]
-    if not valid_keys: return "Bro, this clutch play is actually insane! 😱🔥 #HonorOfKings #HOK"
+    if not valid_keys: return "Bro this gameplay is insane! 💀 #HOK #HonorOfKings"
+    
+    prompt = f"YT Title: '{yt_title}' Desc: '{yt_desc}'. Write a 1-sentence clickbait American slang caption for FB Reels. Max 125 chars. 3 viral hashtags. Sound like a hyped gamer, NOT an AI."
     
     api_key = random.choice(valid_keys)
     url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={api_key}"
-    prompt_text = "You are an American TikTok gaming influencer. Write a short, viral, slang-filled clickbait caption for an Honor of Kings pure gameplay video. Use words like 'Bro', 'Insane', 'Clutch', 'W', 'Cracked'. Ask a question to bait comments. Include 3-5 viral gaming hashtags. Max 150 chars."
-    payload = {"contents": [{"parts": [{"text": prompt_text}]}]}
-    
     try:
-        res = requests.post(url, json=payload, timeout=15)
+        res = requests.post(url, json={"contents": [{"parts": [{"text": prompt}]}]}, timeout=15)
         if res.status_code == 200: 
-            res_json = res.json()
-            if 'candidates' in res_json and len(res_json['candidates']) > 0:
-                return res_json['candidates'][0]['content']['parts'][0]['text'].strip().replace('"', '')
+            return res.json()['candidates'][0]['content']['parts'][0]['text'].strip().replace('"', '')
+    except: pass
+    return "Bro, this clutch play is actually insane! 😱🔥 #HOK #HonorOfKings"
+
+# 🎭 FITUR 3: SMART LOCATORS & HEALTH CHECK (DENGAN USER-AGENT DESKTOP)
+def upload_via_playwright(video_path, caption):
+    print("[INFO] Memulai Browser Automation (Playwright)...")
+    try:
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=True)
+            
+            # MEMAKSA BROWSER MENGGUNAKAN TAMPILAN DESKTOP (BUKAN M.FACEBOOK)
+            context = browser.new_context(
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+            )
+            
+            with open("fb_cookies.txt", "r") as f:
+                cookies = [{"domain": l.split("\t")[0], "flag": l.split("\t")[1], "path": l.split("\t")[2],
+                            "secure": l.split("\t")[3]=="TRUE", "expirationDate": int(l.split("\t")[4]), 
+                            "name": l.split("\t")[5], "value": l.split("\t")[6]} 
+                           for l in f if not l.startswith("#") and len(l.split("\t"))==7]
+            context.add_cookies(cookies)
+            
+            page = context.new_page()
+            
+            # HEALTH CHECK
+            print("[INFO] Health Check: Membuka Facebook...")
+            page.goto("https://www.facebook.com/", timeout=60000)
+            if "login" in page.url or "checkpoint" in page.url:
+                send_telegram_alert("🚨 Cookie FB tidak valid (diminta login). Tolong ganti FB_COOKIES_B64!")
+                return False
+                
+            print(f"[INFO] Membuka Halaman Page ID: {FB_PAGE_ID}")
+            page.goto(f"https://www.facebook.com/profile.php?id={FB_PAGE_ID}/videos", timeout=60000)
+            page.wait_for_timeout(5000)
+            
+            # SMART LOCATORS
+            print("[INFO] Mencari Tombol Upload...")
+            try:
+                page.locator("div[aria-label='Photo/Video']").first.click(timeout=5000)
+            except:
+                try: 
+                    page.get_by_role("button", name=re.compile(r"Video|Foto/Video", re.IGNORECASE)).first.click(timeout=5000)
+                except: 
+                    page.locator("text='Photo/Video'").first.click(timeout=5000)
+            
+            page.wait_for_timeout(3000)
+            print("[INFO] Memasukkan File Video 4K...")
+            page.locator('input[type="file"]').first.set_input_files(video_path)
+            
+            # TUNGGU PROSES 4K (60 DETIK)
+            print("[INFO] Menunggu Facebook memproses video 4K (60s)...")
+            page.wait_for_timeout(60000) 
+            
+            print("[INFO] Mengetik Caption...")
+            page.locator('[contenteditable="true"]').first.fill(caption)
+            page.wait_for_timeout(2000)
+            
+            print("[INFO] Menekan Tombol Posting...")
+            try: 
+                page.get_by_role("button", name=re.compile(r"Post|Posting|Bagikan", re.IGNORECASE)).last.click(timeout=10000)
+            except: 
+                page.locator("div[aria-label='Post']").last.click(timeout=10000)
+            
+            # VERIFIKASI SUKSES
+            print("[INFO] Memverifikasi Upload...")
+            try:
+                page.wait_for_selector("text=Your video is now live", timeout=60000)
+                print("[SUCCESS] Verified Live on FB!")
+                browser.close(); return True
+            except:
+                if page.locator('[contenteditable="true"]').count() == 0:
+                    print("[SUCCESS] Modal tertutup. Menganggap sukses.")
+                    browser.close(); return True
+                else:
+                    send_telegram_alert("⚠️ Upload diproses, tapi verifikasi gagal. Cek FB manual.")
+                    browser.close(); return False
     except Exception as e:
-        print(f"[WARNING] Gemini Exception: {e}")
-    return "Bro, this clutch play is actually insane! 😱🔥 Drop a W in the comments! #HonorOfKings #HOK"
+        print(f"[ERROR] Playwright: {e}")
+        send_telegram_alert(f"❌ Gagal upload via Browser: {str(e)[:50]}")
+        return False
 
 def main():
+    check_reminders()
+    if not check_fb_cookie_expiry(): return 
+    
     link, msg_id, chat_id = get_oldest_telegram_link()
     if not link:
-        print("[INFO] Antrean kosong. Robot tidur sampai jadwal berikutnya.")
+        print("[INFO] Antrean kosong. Robot tidur.")
         return
 
     try:
+        yt_title, yt_desc = get_yt_metadata(link)
         download_video(link)
-        caption = get_gemini_caption()
-        success = process_and_upload(caption)
+        final_video = process_video()
         
-        # HANYA HAPUS LINK JIKA SUKSES UPLOAD KE FB
-        if success and msg_id:
-            delete_telegram_message(msg_id, chat_id)
-    except Exception as e:
-        print(f"[ERROR] Processing failed: {e}")
+        if final_video:
+            caption = generate_caption(yt_title, yt_desc)
+            print(f"[INFO] Caption Final: {caption}")
+            
+            success = upload_via_playwright(final_video, caption)
+            
+            if success and msg_id:
+                delete_telegram_message(msg_id, chat_id)
+                
+    except Exception as e: 
+        print(f"[ERROR] Main: {e}")
     finally:
-        # Bersihkan file sementara
-        if os.path.exists('raw_video.mp4'): os.remove('raw_video.mp4')
+        for f in ['raw_video.mp4', 'final_video.mp4']:
+            if os.path.exists(f): os.remove(f)
 
 if __name__ == "__main__":
     main()
