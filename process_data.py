@@ -123,7 +123,6 @@ def upload_via_playwright(video_path, caption):
                 user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
             )
             
-            # --- INI BAGIAN PERBAIKANNYA (PARSER COOKIE) ---
             cookies = []
             with open("fb_cookies.txt", "r", encoding="utf-8") as f:
                 for line in f:
@@ -131,19 +130,15 @@ def upload_via_playwright(video_path, caption):
                     parts = line.strip().split("\t")
                     if len(parts) == 7:
                         cookie = {
-                            "name": parts[5],
-                            "value": parts[6],
-                            "domain": parts[0],
-                            "path": parts[2],
-                            "secure": parts[3] == "TRUE",
+                            "name": parts[5], "value": parts[6], "domain": parts[0],
+                            "path": parts[2], "secure": parts[3] == "TRUE",
                             "expires": float(parts[4]) if parts[4] else -1
                         }
                         cookies.append(cookie)
             
             if not cookies:
-                send_telegram_alert("❌ Gagal membaca Cookie FB. Pastikan format file benar.")
+                send_telegram_alert("❌ Gagal membaca Cookie FB.")
                 return False
-            # -----------------------------------------------
 
             context.add_cookies(cookies)
             page = context.new_page()
@@ -151,7 +146,7 @@ def upload_via_playwright(video_path, caption):
             print("[INFO] Health Check: Membuka Facebook...")
             page.goto("https://www.facebook.com/", timeout=60000)
             if "login" in page.url or "checkpoint" in page.url:
-                send_telegram_alert("🚨 Cookie FB tidak valid (diminta login). Tolong ganti FB_COOKIES_B64!")
+                send_telegram_alert("🚨 Cookie FB tidak valid. Tolong ganti FB_COOKIES_B64!")
                 return False
                 
             print(f"[INFO] Membuka Halaman Page ID: {FB_PAGE_ID}")
@@ -159,17 +154,38 @@ def upload_via_playwright(video_path, caption):
             page.wait_for_timeout(5000)
             
             print("[INFO] Mencari Tombol Upload...")
-            try:
-                page.locator("div[aria-label='Photo/Video']").first.click(timeout=5000)
-            except:
-                try: page.get_by_role("button", name=re.compile(r"Video|Foto/Video", re.IGNORECASE)).first.click(timeout=5000)
-                except: page.locator("text='Photo/Video'").first.click(timeout=5000)
+            # Selector yang lebih andal dan berlapis
+            upload_selectors = [
+                'div[aria-label="Photo/video"][role="button"]',
+                'div[aria-label="Photo/Video"]',
+                'div[aria-label="Foto/Video"]',
+                '*[aria-label="Photo/video"][role="button"]',
+                'text="Photo/Video"'
+            ]
             
-            page.wait_for_timeout(3000)
-            print("[INFO] Memasukkan File Video 4K...")
-            page.locator('input[type="file"]').first.set_input_files(video_path)
+            upload_btn = None
+            for selector in upload_selectors:
+                try:
+                    locator = page.locator(selector).first
+                    if locator.is_visible(timeout=2000):
+                        upload_btn = locator
+                        print(f"[INFO] Tombol ditemukan dengan selector: {selector}")
+                        break
+                except: continue
+
+            if not upload_btn:
+                send_telegram_alert("❌ Gagal menemukan tombol upload. Facebook mungkin mengubah UI.")
+                return False
+
+            # Gunakan FileChooser untuk menangani dialog file
+            with page.expect_file_chooser() as fc_info:
+                upload_btn.click()
             
-            print("[INFO] Menunggu Facebook memproses video 4K (60s)...")
+            file_chooser = fc_info.value
+            print("[INFO] Memasukkan file video 4K...")
+            file_chooser.set_files(video_path)
+            
+            print("[INFO] Menunggu Facebook memproses video (60s)...")
             page.wait_for_timeout(60000) 
             
             print("[INFO] Mengetik Caption...")
@@ -178,7 +194,7 @@ def upload_via_playwright(video_path, caption):
             
             print("[INFO] Menekan Tombol Posting...")
             try: page.get_by_role("button", name=re.compile(r"Post|Posting|Bagikan", re.IGNORECASE)).last.click(timeout=10000)
-            except: page.locator("div[aria-label='Post']").last.click(timeout=10000)
+            except: page.locator('div[aria-label="Post"]').last.click(timeout=10000)
             
             print("[INFO] Memverifikasi Upload...")
             try:
