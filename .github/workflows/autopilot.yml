@@ -24,32 +24,32 @@ jobs:
       run: |
         sudo apt-get update
         sudo apt-get install -y ffmpeg
-        # Instal Deno untuk memecahkan teks sandi YouTube
         curl -fsSL https://deno.land/install.sh | sh
         echo "$HOME/.deno/bin" >> $GITHUB_PATH
-        # Upgrade yt-dlp agar selalu bisa mendownload video terbaru
         python -m pip install --upgrade pip
         pip install --upgrade yt-dlp yt-dlp-ejs
 
-    - name: Install Python Dependencies
+    - name: Install Python Dependencies & Browser
       run: |
         python -m pip install --upgrade pip
         if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+        # Instal Browser Playwright untuk Upload FB
+        playwright install --with-deps chromium
 
-    - name: Setup YouTube Cookies
+    - name: Setup Cookies
       env:
         YT_COOKIES_B64: ${{ secrets.YT_COOKIES_B64 }}
+        FB_COOKIES_B64: ${{ secrets.FB_COOKIES_B64 }}
       run: |
         echo "$YT_COOKIES_B64" | base64 -d > cookies.txt
+        echo "$FB_COOKIES_B64" | base64 -d > fb_cookies.txt
 
     - name: Execute Core Engine
       env:
-        FB_PAGE_ID: ${{ secrets.FB_PAGE_ID }}
-        FB_PAGE_TOKEN: ${{ secrets.FB_PAGE_TOKEN }}
+        TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+        TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         GEMINI_KEY_1: ${{ secrets.GEMINI_KEY_1 }}
         GEMINI_KEY_2: ${{ secrets.GEMINI_KEY_2 }}
         GEMINI_KEY_3: ${{ secrets.GEMINI_KEY_3 }}
-        TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-        TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
       run: |
         python process_data.py
