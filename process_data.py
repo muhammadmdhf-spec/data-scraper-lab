@@ -115,12 +115,13 @@ def generate_caption(yt_title, yt_desc):
     return "Bro, this clutch play is actually insane! 😱🔥 #HOK"
 
 def upload_via_playwright(video_path, caption):
-    print("[INFO] Memulai Browser Automation...")
+    print("[INFO] Memulai Browser Automation (Dynamic Wait)...")
     try:
         with sync_playwright() as p:
             browser = p.chromium.launch(headless=True)
             context = browser.new_context(
-                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+                viewport={"width": 1920, "height": 1080}
             )
             
             cookies = []
@@ -129,12 +130,11 @@ def upload_via_playwright(video_path, caption):
                     if line.startswith("#") or not line.strip(): continue
                     parts = line.strip().split("\t")
                     if len(parts) == 7:
-                        cookie = {
+                        cookies.append({
                             "name": parts[5], "value": parts[6], "domain": parts[0],
                             "path": parts[2], "secure": parts[3] == "TRUE",
                             "expires": float(parts[4]) if parts[4] else -1
-                        }
-                        cookies.append(cookie)
+                        })
             
             if not cookies:
                 send_telegram_alert("❌ Gagal membaca Cookie FB.")
@@ -152,70 +152,78 @@ def upload_via_playwright(video_path, caption):
             print(f"[INFO] Membuka Halaman Page ID: {FB_PAGE_ID}")
             page.goto(f"https://www.facebook.com/profile.php?id={FB_PAGE_ID}/videos", timeout=60000)
             
-            # Menunggu halaman benar-benar stabil
-            try:
-                page.wait_for_load_state("networkidle", timeout=15000)
-            except:
-                print("[WARNING] Network tidak sepenuhnya idle, melanjutkan...")
-            
-            page.wait_for_timeout(5000) # Beri waktu tambahan untuk render React
+            try: page.wait_for_load_state("networkidle", timeout=15000)
+            except: pass
+            page.wait_for_timeout(5000) 
             
             print("[INFO] Mencari Tombol Upload...")
-            # Daftar selector yang lebih lengkap (termasuk Bahasa Indonesia)
             upload_selectors = [
-                '*[aria-label="Photo/video"][role="button"]',
-                '*[aria-label="Photo/Video"][role="button"]',
                 '*[aria-label="Foto/video"][role="button"]',
-                '*[aria-label="Foto/Video"][role="button"]',
-                '*[aria-label="Video"][role="button"]',
+                '*[aria-label="Photo/video"][role="button"]',
+                'div[aria-label="Foto/video"]',
                 'div[aria-label="Photo/video"]',
-                'div[aria-label="Video"]'
+                'text="Foto/video"',
+                'text="Photo/video"'
             ]
             
             upload_btn = None
             for selector in upload_selectors:
                 try:
                     locator = page.locator(selector).first
-                    if locator.is_visible(timeout=5000):
+                    if locator.is_visible(timeout=3000):
                         upload_btn = locator
-                        print(f"[INFO] Tombol ditemukan dengan selector: {selector}")
                         break
                 except: continue
 
-            if not upload_btn:
-                # FALLBACK: Jika tombol tidak ketemu, coba langsung cari input file
-                print("[WARNING] Tombol tidak ditemukan, mencoba fallback ke input file langsung...")
+            if upload_btn:
                 try:
-                    file_input = page.locator('input[type="file"]').first
-                    if file_input.count() > 0:
-                        print("[INFO] Menemukan input file langsung, memasukkan video...")
-                        file_input.set_input_files(video_path)
-                    else:
-                        send_telegram_alert("❌ Gagal menemukan tombol upload atau input file. Facebook mungkin mengubah UI total.")
-                        return False
-                except Exception as e:
-                    send_telegram_alert(f"❌ Gagal fallback upload: {e}")
-                    return False
-            else:
-                # Gunakan FileChooser jika tombol ditemukan
-                with page.expect_file_chooser(timeout=15000) as fc_info:
-                    upload_btn.click()
-                file_chooser = fc_info.value
-                print("[INFO] Memasukkan file video 4K...")
-                file_chooser.set_files(video_path)
+                    with page.expect_file_chooser(timeout=10000) as fc_info:
+                        upload_btn.click(force=True)
+                    fc_info.value.set_files(video_path)
+                except: upload_btn = None
             
-            print("[INFO] Menunggu Facebook memproses video (60s)...")
-            page.wait_for_timeout(60000) 
-            
+            if not upload_btn:
+                print("[WARNING] Fallback ke Direct Injection...")
+                page.locator('input[type="file"]').first.set_input_files(video_path)
+
             print("[INFO] Mengetik Caption...")
-            page.locator('[contenteditable="true"]').first.fill(caption)
-            page.wait_for_timeout(2000)
+            try:
+                page.locator('[contenteditable="true"]').first.fill(caption)
+            except:
+                page.locator('div[role="textbox"]').first.fill(caption)
             
-            print("[INFO] Menekan Tombol Posting...")
+            # ========================================================
+            # ⏳ DYNAMIC WAIT: Menunggu Tombol Post Menyala (Enabled)
+            # Playwright otomatis menunggu hingga video selesai diproses
+            # Kita beri waktu maksimal 15 menit (900000 ms)
+            # ========================================================
+            print("[INFO] Menunggu Facebook selesai memproses video & menyalakan tombol Post...")
+            post_clicked = False
+            
             try: 
-                page.locator('*[aria-label="Post"][role="button"]').last.click(timeout=10000)
-            except: 
-                page.get_by_role("button", name=re.compile(r"Post|Posting|Bagikan", re.IGNORECASE)).last.click(timeout=10000)
+                post_btn = page.locator('*[aria-label="Post"][role="button"]').last
+                if post_btn.count() > 0:
+                    # Playwright akan auto-wait sampai tombol ini bisa diklik (tidak disabled)
+                    post_btn.click(timeout=900000) 
+                    post_clicked = True
+            except Exception as e:
+                print(f"[INFO] Percobaan klik Post (Selector 1) timeout: {str(e)[:50]}")
+            
+            if not post_clicked:
+                try:
+                    post_btn = page.get_by_role("button", name=re.compile(r"^Post|^Posting|^Bagikan", re.IGNORECASE)).last
+                    post_btn.click(timeout=600000)
+                    post_clicked = True
+                except Exception as e:
+                     print(f"[INFO] Percobaan klik Post (Selector 2) timeout: {str(e)[:50]}")
+            
+            if not post_clicked:
+                try:
+                    page.locator('div[role="button"]:text-is("Post")').last.click(timeout=600000)
+                    post_clicked = True
+                except:
+                    send_telegram_alert("❌ Gagal menemukan/menekan tombol Post setelah menunggu lama.")
+                    return False
             
             print("[INFO] Memverifikasi Upload...")
             try:
