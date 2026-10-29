@@ -14,13 +14,18 @@ BG_IMAGE = "IMG-20261027-WA6038.jpg"
 FB_PAGE_ID = "110050601565770"
 STATE_FILE = "state.json"
 
-def send_telegram_alert(message):
+# ==========================================
+# UTILITY & ALERTS
+# ==========================================
+def send_telegram_alert(message, retries=3):
     print(f"[ALERT] {message}")
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-    try: 
-        requests.post(url, data={"chat_id": CHAT_ID, "text": message}, timeout=10)
-    except Exception as e:
-        print(f"[ERROR] Gagal kirim notif Telegram: {e}")
+    for i in range(retries):
+        try: 
+            res = requests.post(url, data={"chat_id": CHAT_ID, "text": message}, timeout=10)
+            if res.status_code == 200: break
+        except Exception as e:
+            print(f"[ERROR] Gagal kirim notif Telegram (Percobaan {i+1}): {e}")
 
 def check_reminders():
     today = datetime.date.today()
@@ -51,6 +56,9 @@ def check_fb_cookie_expiry():
                     return False
     return True
 
+# ==========================================
+# TELEGRAM PARSER
+# ==========================================
 def get_oldest_telegram_link():
     print("[INFO] Checking Telegram...")
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/getUpdates?limit=100"
@@ -73,6 +81,68 @@ def delete_telegram_message(msg_id, chat_id):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/deleteMessage?chat_id={chat_id}&message_id={msg_id}"
     requests.get(url)
 
+# ==========================================
+# YOUTUBE DOWNLOADER (FORCE 1080P)
+# ==========================================
+def download_video(url):
+    print("[INFO] Downloading Video (Dipaksa 1080p)...")
+    # Memaksa download format 1080p tepat (jika tidak ada, ambil yang terbaik di bawah 1080p)
+    cmd_1080 = ['yt-dlp', '--js-runtimes', 'deno', '--cookies', 'cookies.txt', 
+           '-f', 'bestvideo[height<=1080]+bestaudio/best', 
+           '--merge-output-format', 'mp4', '--retries', '10', url, '-o', 'raw_video.mp4']
+    try: 
+        subprocess.run(cmd_1080, check=True, capture_output=True, text=True)
+        return True
+    except Exception as e:
+        print(f"[WARNING] Gagal download 1080p: {e}. Mencoba kualitas terendah...")
+        cmd_fallback = ['yt-dlp', '--js-runtimes', 'deno', '--cookies', 'cookies.txt', 
+               '-f', 'worst', '--retries', '5', url, '-o', 'raw_video.mp4']
+        try:
+            subprocess.run(cmd_fallback, check=True, capture_output=True, text=True)
+            return True
+        except Exception as e2:
+            send_telegram_alert("❌ Gagal Download Total. Cek Cookie YouTube.")
+            raise e2
+
+# ==========================================
+# FFMPEG EDITOR (ULTRA HIGH BITRATE 1080P)
+# ==========================================
+def process_video():
+    print("[INFO] Editing Video (1080p Ultra High Bitrate, H.264)...")
+    final_video = "final_video.mp4"
+    
+    # Pastikan resolusi output tepat 1080x1920
+    filter_complex = "[1:v]scale=1080:-1[fg];[0:v][fg]overlay=(W-w)/2:(H-h)/2:shortest=1"
+    
+    # PARAMETER BITRATE SUPER TINGGI:
+    # -b:v 25M (Bitrate video 25 Mbps)
+    # -maxrate 30M (Batas maksimal 30 Mbps)
+    # -bufsize 60M (Buffer size besar)
+    # -c:a aac -b:a 320k (Audio kualitas studio)
+    # -preset superfast (Agar proses render tidak kelamaan di GitHub)
+    
+    if not os.path.exists(BG_IMAGE): 
+        print("[WARNING] Background image tidak ditemukan! Menggunakan layar hitam.")
+        cmd = ['ffmpeg', '-y', '-f', 'lavfi', '-i', 'color=c=black:s=1080x1920', '-i', 'raw_video.mp4', 
+               '-filter_complex', filter_complex, 
+               '-c:v', 'libx264', '-preset', 'superfast', '-b:v', '25M', '-maxrate', '30M', '-bufsize', '60M',
+               '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-b:a', '320k', final_video]
+    else:
+        cmd = ['ffmpeg', '-y', '-loop', '1', '-i', BG_IMAGE, '-i', 'raw_video.mp4', 
+               '-filter_complex', filter_complex, 
+               '-c:v', 'libx264', '-preset', 'superfast', '-b:v', '25M', '-maxrate', '30M', '-bufsize', '60M',
+               '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-b:a', '320k', final_video]
+               
+    try:
+        subprocess.run(cmd, check=True)
+        return final_video
+    except Exception as e:
+        send_telegram_alert(f"❌ Gagal Render Video: {e}")
+        return None
+
+# ==========================================
+# GEMINI CAPTION GENERATOR
+# ==========================================
 def get_yt_metadata(url):
     try:
         cmd = ['yt-dlp', '--dump-json', '--js-runtimes', 'deno', '--cookies', 'cookies.txt', url]
@@ -81,31 +151,8 @@ def get_yt_metadata(url):
         return data.get('title', 'HOK Gameplay'), data.get('description', '')[:200]
     except: return "HOK Gameplay", ""
 
-def download_video(url):
-    print("[INFO] Downloading 1080p Video (Source Terbaik)...")
-    cmd = ['yt-dlp', '--js-runtimes', 'deno', '--cookies', 'cookies.txt', 
-           '-f', 'bestvideo[height<=1080]+bestaudio/best', 
-           '--merge-output-format', 'mp4', url, '-o', 'raw_video.mp4']
-    try: subprocess.run(cmd, check=True, capture_output=True, text=True)
-    except Exception as e:
-        send_telegram_alert("❌ Gagal Download. Cek Cookie YouTube.")
-        raise e
-
-def process_video():
-    print("[INFO] Editing Video (1080p High Bitrate, H.264)...")
-    if not os.path.exists(BG_IMAGE): return None
-    filter_complex = "[1:v]scale=1080:-1[fg];[0:v][fg]overlay=(W-w)/2:(H-h)/2:shortest=1"
-    
-    # KUNCI PERUBAHAN: H.264 (libx264) + Bitrate 6 Mbps
-    # Ini membuat kualitas sangat tajam (Crispy) namun ukuran file tetap kecil
-    cmd = ['ffmpeg', '-y', '-loop', '1', '-i', BG_IMAGE, '-i', 'raw_video.mp4', 
-           '-filter_complex', filter_complex, 
-           '-c:v', 'libx264', '-preset', 'veryfast', '-b:v', '6M', '-maxrate', '8M', '-bufsize', '12M',
-           '-c:a', 'aac', '-b:a', '192k', 'final_video.mp4']
-    subprocess.run(cmd, check=True)
-    return "final_video.mp4"
-
 def generate_caption(yt_title, yt_desc):
+    print("[INFO] Membuat Caption Slang Amerika...")
     api_keys = [os.environ.get("GEMINI_KEY_1"), os.environ.get("GEMINI_KEY_2"), os.environ.get("GEMINI_KEY_3")]
     valid_keys = [k for k in api_keys if k]
     if not valid_keys: return "Bro this gameplay is insane! 💀 #HOK #HonorOfKings"
@@ -118,8 +165,11 @@ def generate_caption(yt_title, yt_desc):
     except: pass
     return "Bro, this clutch play is actually insane! 😱🔥 #HOK"
 
+# ==========================================
+# PLAYWRIGHT UPLOADER (THE ULTIMATE FALLBACK)
+# ==========================================
 def upload_via_playwright(video_path, caption):
-    print("[INFO] Memulai Browser Automation...")
+    print("[INFO] Memulai Browser Automation (Sistem Pertahanan Berlapis)...")
     try:
         with sync_playwright() as p:
             browser = p.chromium.launch(headless=True)
@@ -147,6 +197,8 @@ def upload_via_playwright(video_path, caption):
             context.add_cookies(cookies)
             page = context.new_page()
             
+            page.on("dialog", lambda dialog: dialog.accept())
+            
             print("[INFO] Health Check: Membuka Facebook...")
             page.goto("https://www.facebook.com/", timeout=60000)
             if "login" in page.url or "checkpoint" in page.url:
@@ -162,14 +214,10 @@ def upload_via_playwright(video_path, caption):
             
             print("[INFO] Mencari Tombol Upload...")
             upload_selectors = [
-                '*[aria-label="Foto/video"][role="button"]',
-                '*[aria-label="Photo/video"][role="button"]',
-                'div[aria-label="Foto/video"]',
-                'div[aria-label="Photo/video"]',
-                'text="Foto/video"',
-                'text="Photo/video"'
+                '*[aria-label="Foto/video"][role="button"]', '*[aria-label="Photo/video"][role="button"]',
+                'div[aria-label="Foto/video"]', 'div[aria-label="Photo/video"]',
+                'text="Foto/video"', 'text="Photo/video"'
             ]
-            
             upload_btn = None
             for selector in upload_selectors:
                 try:
@@ -184,11 +232,16 @@ def upload_via_playwright(video_path, caption):
                     with page.expect_file_chooser(timeout=10000) as fc_info:
                         upload_btn.click(force=True)
                     fc_info.value.set_files(video_path)
-                except: upload_btn = None
+                except: 
+                    upload_btn = None
             
             if not upload_btn:
-                print("[WARNING] Fallback ke Direct Injection...")
-                page.locator('input[type="file"]').first.set_input_files(video_path)
+                print("[WARNING] Tombol gagal diklik. Menggunakan Direct Injection...")
+                try:
+                    page.locator('input[type="file"]').first.set_input_files(video_path)
+                except:
+                    send_telegram_alert("❌ Gagal memasukkan file ke FB.")
+                    return False
 
             print("[INFO] Mengetik Caption...")
             try:
@@ -196,42 +249,73 @@ def upload_via_playwright(video_path, caption):
             except:
                 page.locator('div[role="textbox"]').first.fill(caption)
             
-            print("[INFO] Menunggu Facebook memproses video (30s)...")
-            page.wait_for_timeout(30000) 
+            # ========================================================
+            # WAKTU TUNGGU DIPERPANJANG KARENA FILENYA BESAR (BITRATE TINGGI)
+            # ========================================================
+            print("[INFO] Menunggu Facebook memproses video bitrate tinggi (90s)...")
+            page.wait_for_timeout(90000) 
             
             print("[INFO] Mencari dan Menekan Tombol Post...")
-            try:
-                post_btn = page.get_by_role("button", name=re.compile(r"^Post$|^Posting$", re.IGNORECASE)).last
-                post_btn.scroll_into_view_if_needed(timeout=10000)
-                
-                is_disabled = post_btn.get_attribute("aria-disabled")
-                if is_disabled == "true":
-                    print("[INFO] Tombol Post disabled, menunggu 30 detik lagi...")
-                    page.wait_for_timeout(30000)
-                
-                post_btn.click(force=True, timeout=30000)
-                print("[INFO] Tombol Post berhasil diklik!")
-            except Exception as e:
-                print(f"[WARNING] Gagal klik Post (Coba cara alternatif): {e}")
-                page.locator('div[role="button"]:has-text("Post"), div[role="button"]:has-text("Posting")').last.click(force=True)
+            post_clicked = False
+            post_selectors = [
+                'div[role="button"]:has-text("Post")', 'div[role="button"]:has-text("Posting")',
+                '*[aria-label="Post"][role="button"]', '*[aria-label="Posting"][role="button"]'
+            ]
+            for selector in post_selectors:
+                try:
+                    post_btn = page.locator(selector).last
+                    post_btn.wait_for(state="visible", timeout=15000)
+                    post_btn.click(force=True, timeout=5000)
+                    post_clicked = True
+                    break
+                except: continue
+            
+            if not post_clicked:
+                print("[WARNING] Klik normal gagal. Menggunakan JavaScript Injection...")
+                try:
+                    js_script = """
+                    var buttons = document.querySelectorAll('div[role="button"]');
+                    for (var i = 0; i < buttons.length; i++) {
+                        var text = buttons[i].innerText.trim();
+                        if (text === 'Post' || text === 'Posting' || text === 'Bagikan') {
+                            buttons[i].click();
+                            return true;
+                        }
+                    }
+                    return false;
+                    """
+                    if page.evaluate(js_script): post_clicked = True
+                except: pass
+
+            if not post_clicked:
+                send_telegram_alert("❌ Gagal Total Menekan Tombol Post.")
+                return False
 
             print("[INFO] Memverifikasi Upload...")
+            page.wait_for_timeout(15000) 
+            
             try:
-                page.wait_for_selector("text=Your video is now live", timeout=60000)
-                print("[SUCCESS] Verified Live on FB!")
+                page.wait_for_selector("text=Your video is now live", timeout=30000)
                 browser.close(); return True
-            except:
-                if page.locator('[contenteditable="true"]').count() == 0:
-                    print("[SUCCESS] Modal tertutup. Menganggap sukses.")
-                    browser.close(); return True
-                else:
-                    send_telegram_alert("⚠️ Upload diproses, tapi verifikasi gagal. Cek FB manual.")
-                    browser.close(); return False
+            except: pass
+            
+            if page.locator('[contenteditable="true"]').count() == 0:
+                browser.close(); return True
+                
+            if f"/videos" in page.url:
+                browser.close(); return True
+
+            send_telegram_alert("⚠️ Upload diproses, tapi verifikasi visual gagal. Cek FB manual.")
+            browser.close(); return False
+            
     except Exception as e:
-        print(f"[ERROR] Playwright: {e}")
+        print(f"[ERROR] Playwright Fatal Error: {e}")
         send_telegram_alert(f"❌ Gagal upload via Browser: {str(e)[:50]}")
         return False
 
+# ==========================================
+# MAIN EXECUTION
+# ==========================================
 def main():
     check_reminders()
     if not check_fb_cookie_expiry(): return 
@@ -254,10 +338,13 @@ def main():
             if success and msg_id:
                 delete_telegram_message(msg_id, chat_id)
                 
-    except Exception as e: print(f"[ERROR] Main: {e}")
+    except Exception as e: 
+        print(f"[ERROR] Main Error: {e}")
     finally:
-        for f in ['raw_video.mp4', 'final_video.mp4']:
-            if os.path.exists(f): os.remove(f)
+        for f in ['raw_video.mp4', 'final_video.mp4', 'audio.wav']:
+            if os.path.exists(f): 
+                try: os.remove(f)
+                except: pass
 
 if __name__ == "__main__":
     main()
