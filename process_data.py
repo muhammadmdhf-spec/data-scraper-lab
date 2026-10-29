@@ -92,9 +92,10 @@ def download_video(url):
     subprocess.run(cmd, check=True, capture_output=True, text=True)
 
 def process_video():
-    print("[INFO] Editing Video (1080p Ultra High Bitrate, H.264)...")
+    print("[INFO] Editing Video (1080p High Bitrate 12M, H.264)...")
     filter_complex = "[1:v]scale=1080:-1[fg];[0:v][fg]overlay=(W-w)/2:(H-h)/2:shortest=1"
-    cmd = ['ffmpeg', '-y', '-loop', '1', '-i', BG_IMAGE, '-i', 'raw_video.mp4', '-filter_complex', filter_complex, '-c:v', 'libx264', '-preset', 'superfast', '-b:v', '25M', '-maxrate', '30M', '-bufsize', '60M', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-b:a', '320k', 'final_video.mp4']
+    # BITRATE DIUBAH MENJADI 12M
+    cmd = ['ffmpeg', '-y', '-loop', '1', '-i', BG_IMAGE, '-i', 'raw_video.mp4', '-filter_complex', filter_complex, '-c:v', 'libx264', '-preset', 'superfast', '-b:v', '12M', '-maxrate', '15M', '-bufsize', '30M', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-b:a', '192k', 'final_video.mp4']
     subprocess.run(cmd, check=True)
     return "final_video.mp4"
 
@@ -156,7 +157,7 @@ def ask_gemini_vision(page):
         if os.path.exists(screenshot_path): os.remove(screenshot_path)
 
 def upload_via_playwright(video_path, caption):
-    print("[INFO] Memulai Browser Automation...")
+    print("[INFO] Memulai Browser Automation (MODE MEDITASI 2 JAM)...")
     ui_memory = load_ui_memory()
     
     try:
@@ -196,80 +197,61 @@ def upload_via_playwright(video_path, caption):
             page.locator('[contenteditable="true"]').first.fill(caption)
             
             # ========================================================
-            # 🧠 SMART WAIT: MENUNGGU TOMBOL POST MUNCUL DI DOM
+            # 🧠 MODE MEDITASI: MENUNGGU SAMPAI 2 JAM
             # ========================================================
-            print("[INFO] Menunggu Facebook selesai memproses video (Menunggu tombol Post muncul)...")
-            try:
-                # Menunggu hingga tombol Post benar-benar ada di halaman (bisa memakan waktu 2-5 menit)
-                page.wait_for_selector('div[role="button"]:has-text("Post"), div[role="button"]:has-text("Posting"), div[role="button"]:has-text("Bagikan")', state="attached", timeout=300000)
-                print("[INFO] Tombol Post terdeteksi di DOM!")
-            except Exception as e:
-                print(f"[WARNING] Waktu tunggu tombol Post habis: {e}")
-
-            page.wait_for_timeout(5000) # Jeda sebentar sebelum AI melihat
+            print("[INFO] Menunggu Facebook selesai memproses video (Hingga 2 Jam)...")
             
-            # ========================================================
-            # EKSEKUSI AI VISION + JS INJECTION FALLBACK
-            # ========================================================
             post_success = False
+            # Loop 2 jam (120 menit = 7200 detik). Kita cek setiap 15 detik = 480 kali cek.
             
-            # Coba Memori Dulu
-            if "post_coords" in ui_memory:
-                coords = ui_memory["post_coords"]
-                print(f"[INFO] Memori ditemukan! Klik koordinat X:{coords['x']}, Y:{coords['y']}...")
-                page.mouse.click(coords['x'], coords['y'])
-                page.wait_for_timeout(10000)
-                if page.locator('[contenteditable="true"]').count() == 0:
-                    post_success = True
-                    print("[SUCCESS] Memori bekerja!")
-                else:
-                    print("[WARNING] Memori gagal. Memanggil Guru...")
-                    del ui_memory["post_coords"]
-            
-            if not post_success:
-                max_ai_retries = 5
-                for attempt in range(max_ai_retries):
-                    print(f"[INFO] Memanggil Guru (AI Vision), Percobaan ke-{attempt+1}...")
-                    ai_result = ask_gemini_vision(page)
-                    
-                    if ai_result == "disabled":
-                        print("[INFO] AI melihat tombol Post masih disabled. Menunggu 30 detik...")
-                        page.wait_for_timeout(30000)
-                        continue
-                    elif isinstance(ai_result, tuple):
-                        x, y = ai_result
-                        print(f"[INFO] Guru menemukan koordinat X:{x}, Y:{y}. Mengklik...")
-                        page.mouse.click(x, y)
-                        page.wait_for_timeout(10000)
-                        
+            for check_count in range(480):
+                # Coba Memori Dulu
+                if "post_coords" in ui_memory:
+                    coords = ui_memory["post_coords"]
+                    print(f"[INFO] Cek ke-{check_count+1}: Mencoba klik koordinat memori X:{coords['x']}, Y:{coords['y']}...")
+                    try:
+                        page.mouse.click(coords['x'], coords['y'])
+                        page.wait_for_timeout(5000)
                         if page.locator('[contenteditable="true"]').count() == 0:
-                            print("[SUCCESS] Guru berhasil!")
-                            ui_memory["post_coords"] = {"x": x, "y": y}
-                            save_ui_memory(ui_memory)
                             post_success = True
+                            print("[SUCCESS] Memori bekerja! Video terupload.")
                             break
-                    else:
-                        print("[WARNING] Guru buta. Mencoba JS Injection...")
-                        try:
-                            js_script = "var b = document.querySelectorAll('div[role=\"button\"]'); for(var i=0; i<b.length; i++){ if(['Post','Posting','Bagikan'].includes(b[i].innerText.trim())){ b[i].click(); return true; } } return false;"
-                            if page.evaluate(js_script): 
-                                post_success = True
-                                break
-                        except: pass
+                    except: pass
+                
+                if not post_success:
+                    # Tanya AI setiap 1 menit (4 kali cek), bukan setiap 15 detik agar kuota hemat
+                    if check_count % 4 == 0:
+                        print(f"[INFO] Memanggil Guru (AI Vision), Cek ke-{check_count+1}...")
+                        ai_result = ask_gemini_vision(page)
                         
-                        # Fallback: Tekan Enter pada keyboard
-                        print("[WARNING] JS gagal. Mencoba menekan tombol Enter...")
-                        try:
-                            page.keyboard.press("Enter")
+                        if isinstance(ai_result, tuple):
+                            x, y = ai_result
+                            print(f"[INFO] Guru menemukan tombol X:{x}, Y:{y}. Mengklik...")
+                            page.mouse.click(x, y)
                             page.wait_for_timeout(5000)
                             if page.locator('[contenteditable="true"]').count() == 0:
+                                print("[SUCCESS] Guru berhasil!")
+                                ui_memory["post_coords"] = {"x": x, "y": y}
+                                save_ui_memory(ui_memory)
                                 post_success = True
                                 break
-                        except: pass
-                        page.wait_for_timeout(30000)
+                        else:
+                            print("[WARNING] Guru melihat tombol masih disabled. Lanjut menunggu...")
+                            
+                            # Fallback JS jika AI bilang disabled
+                            try:
+                                js_script = "var b = document.querySelectorAll('div[role=\"button\"]'); for(var i=0; i<b.length; i++){ if(['Post','Posting','Bagikan'].includes(b[i].innerText.trim())){ b[i].click(); return true; } } return false;"
+                                if page.evaluate(js_script): 
+                                    page.wait_for_timeout(5000)
+                                    if page.locator('[contenteditable="true"]').count() == 0:
+                                        post_success = True
+                                        break
+                            except: pass
+                
+                page.wait_for_timeout(15000) # Tunggu 15 detik sebelum cek lagi
 
             if not post_success:
-                send_telegram_alert("❌ Semua metode (AI, JS, Enter) gagal menekan tombol Post.")
+                send_telegram_alert("❌ Setelah menunggu 2 JAM, tombol Post tetap tidak mau diklik. Facebook mungkin menolak video sebesar ini.")
                 browser.close(); return False
 
             print("[INFO] Memverifikasi Upload...")
