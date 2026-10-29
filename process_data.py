@@ -82,9 +82,9 @@ def get_yt_metadata(url):
     except: return "HOK Gameplay", ""
 
 def download_video(url):
-    print("[INFO] Downloading 4K Video...")
+    print("[INFO] Downloading 1080p Video (Source Terbaik)...")
     cmd = ['yt-dlp', '--js-runtimes', 'deno', '--cookies', 'cookies.txt', 
-           '-f', 'bestvideo[height<=2160][vcodec!*=av01]+bestaudio/best', 
+           '-f', 'bestvideo[height<=1080]+bestaudio/best', 
            '--merge-output-format', 'mp4', url, '-o', 'raw_video.mp4']
     try: subprocess.run(cmd, check=True, capture_output=True, text=True)
     except Exception as e:
@@ -92,12 +92,16 @@ def download_video(url):
         raise e
 
 def process_video():
-    print("[INFO] Editing Video with Overlay...")
+    print("[INFO] Editing Video (1080p High Bitrate, H.264)...")
     if not os.path.exists(BG_IMAGE): return None
     filter_complex = "[1:v]scale=1080:-1[fg];[0:v][fg]overlay=(W-w)/2:(H-h)/2:shortest=1"
+    
+    # KUNCI PERUBAHAN: H.264 (libx264) + Bitrate 6 Mbps
+    # Ini membuat kualitas sangat tajam (Crispy) namun ukuran file tetap kecil
     cmd = ['ffmpeg', '-y', '-loop', '1', '-i', BG_IMAGE, '-i', 'raw_video.mp4', 
-           '-filter_complex', filter_complex, '-c:v', 'libx265', '-preset', 'ultrafast', 
-           '-crf', '23', '-c:a', 'aac', '-b:a', '192k', 'final_video.mp4']
+           '-filter_complex', filter_complex, 
+           '-c:v', 'libx264', '-preset', 'veryfast', '-b:v', '6M', '-maxrate', '8M', '-bufsize', '12M',
+           '-c:a', 'aac', '-b:a', '192k', 'final_video.mp4']
     subprocess.run(cmd, check=True)
     return "final_video.mp4"
 
@@ -115,7 +119,7 @@ def generate_caption(yt_title, yt_desc):
     return "Bro, this clutch play is actually insane! 😱🔥 #HOK"
 
 def upload_via_playwright(video_path, caption):
-    print("[INFO] Memulai Browser Automation (Dynamic Wait)...")
+    print("[INFO] Memulai Browser Automation...")
     try:
         with sync_playwright() as p:
             browser = p.chromium.launch(headless=True)
@@ -192,39 +196,25 @@ def upload_via_playwright(video_path, caption):
             except:
                 page.locator('div[role="textbox"]').first.fill(caption)
             
-            # ========================================================
-            # ⏳ DYNAMIC WAIT: Menunggu Tombol Post Menyala (Enabled)
-            # Playwright otomatis menunggu hingga video selesai diproses
-            # Kita beri waktu maksimal 15 menit (900000 ms)
-            # ========================================================
-            print("[INFO] Menunggu Facebook selesai memproses video & menyalakan tombol Post...")
-            post_clicked = False
+            print("[INFO] Menunggu Facebook memproses video (30s)...")
+            page.wait_for_timeout(30000) 
             
-            try: 
-                post_btn = page.locator('*[aria-label="Post"][role="button"]').last
-                if post_btn.count() > 0:
-                    # Playwright akan auto-wait sampai tombol ini bisa diklik (tidak disabled)
-                    post_btn.click(timeout=900000) 
-                    post_clicked = True
+            print("[INFO] Mencari dan Menekan Tombol Post...")
+            try:
+                post_btn = page.get_by_role("button", name=re.compile(r"^Post$|^Posting$", re.IGNORECASE)).last
+                post_btn.scroll_into_view_if_needed(timeout=10000)
+                
+                is_disabled = post_btn.get_attribute("aria-disabled")
+                if is_disabled == "true":
+                    print("[INFO] Tombol Post disabled, menunggu 30 detik lagi...")
+                    page.wait_for_timeout(30000)
+                
+                post_btn.click(force=True, timeout=30000)
+                print("[INFO] Tombol Post berhasil diklik!")
             except Exception as e:
-                print(f"[INFO] Percobaan klik Post (Selector 1) timeout: {str(e)[:50]}")
-            
-            if not post_clicked:
-                try:
-                    post_btn = page.get_by_role("button", name=re.compile(r"^Post|^Posting|^Bagikan", re.IGNORECASE)).last
-                    post_btn.click(timeout=600000)
-                    post_clicked = True
-                except Exception as e:
-                     print(f"[INFO] Percobaan klik Post (Selector 2) timeout: {str(e)[:50]}")
-            
-            if not post_clicked:
-                try:
-                    page.locator('div[role="button"]:text-is("Post")').last.click(timeout=600000)
-                    post_clicked = True
-                except:
-                    send_telegram_alert("❌ Gagal menemukan/menekan tombol Post setelah menunggu lama.")
-                    return False
-            
+                print(f"[WARNING] Gagal klik Post (Coba cara alternatif): {e}")
+                page.locator('div[role="button"]:has-text("Post"), div[role="button"]:has-text("Posting")').last.click(force=True)
+
             print("[INFO] Memverifikasi Upload...")
             try:
                 page.wait_for_selector("text=Your video is now live", timeout=60000)
