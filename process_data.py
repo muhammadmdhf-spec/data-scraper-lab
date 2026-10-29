@@ -156,18 +156,18 @@ def upload_via_playwright(video_path, caption):
             print("[INFO] Mencari Tombol Upload...")
             # Selector yang lebih andal dan berlapis
             upload_selectors = [
-                'div[aria-label="Photo/video"][role="button"]',
-                'div[aria-label="Photo/Video"]',
-                'div[aria-label="Foto/Video"]',
                 '*[aria-label="Photo/video"][role="button"]',
-                'text="Photo/Video"'
+                '*[aria-label="Photo/Video"][role="button"]',
+                '*[aria-label="Foto/Video"][role="button"]',
+                'div[aria-label="Photo/video"]',
+                'text="Photo/video"'
             ]
             
             upload_btn = None
             for selector in upload_selectors:
                 try:
                     locator = page.locator(selector).first
-                    if locator.is_visible(timeout=2000):
+                    if locator.is_visible(timeout=5000):
                         upload_btn = locator
                         print(f"[INFO] Tombol ditemukan dengan selector: {selector}")
                         break
@@ -178,7 +178,7 @@ def upload_via_playwright(video_path, caption):
                 return False
 
             # Gunakan FileChooser untuk menangani dialog file
-            with page.expect_file_chooser() as fc_info:
+            with page.expect_file_chooser(timeout=10000) as fc_info:
                 upload_btn.click()
             
             file_chooser = fc_info.value
@@ -193,8 +193,8 @@ def upload_via_playwright(video_path, caption):
             page.wait_for_timeout(2000)
             
             print("[INFO] Menekan Tombol Posting...")
-            try: page.get_by_role("button", name=re.compile(r"Post|Posting|Bagikan", re.IGNORECASE)).last.click(timeout=10000)
-            except: page.locator('div[aria-label="Post"]').last.click(timeout=10000)
+            try: page.locator('*[aria-label="Post"][role="button"]').last.click(timeout=10000)
+            except: page.get_by_role("button", name=re.compile(r"Post|Posting|Bagikan", re.IGNORECASE)).last.click(timeout=10000)
             
             print("[INFO] Memverifikasi Upload...")
             try:
