@@ -16,9 +16,6 @@ FB_PAGE_ID = "110050601565770"
 STATE_FILE = "state.json"
 MEMORY_FILE = "ui_memory.json"
 
-# ==========================================
-# UTILITY & ALERTS
-# ==========================================
 def send_telegram_alert(message, retries=3):
     print(f"[ALERT] {message}")
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
@@ -51,37 +48,27 @@ def check_fb_cookie_expiry():
                     return False
     return True
 
-# ==========================================
-# UI MEMORY (OTAK PEMBELAJARAN BOT)
-# ==========================================
 def load_ui_memory():
     if os.path.exists(MEMORY_FILE):
-        with open(MEMORY_FILE, "r") as f:
-            return json.load(f)
+        with open(MEMORY_FILE, "r") as f: return json.load(f)
     return {}
 
 def save_ui_memory(data):
-    with open(MEMORY_FILE, "w") as f:
-        json.dump(data, f)
-    print("[INFO] Memori UI berhasil disimpan ke file lokal.")
+    with open(MEMORY_FILE, "w") as f: json.dump(data, f)
+    print("[INFO] Memori UI berhasil disimpan.")
 
 def push_ui_memory_to_github():
-    # Fungsi untuk mengunggah memori ke GitHub agar diingat besok
     print("[INFO] Mengunggah memori ke GitHub...")
     try:
         subprocess.run(['git', 'config', '--global', 'user.name', 'AutoBot'], check=True)
         subprocess.run(['git', 'config', '--global', 'user.email', 'bot@autobot.com'], check=True)
         subprocess.run(['git', 'add', MEMORY_FILE], check=True)
         subprocess.run(['git', 'commit', '-m', 'Update UI Memory (Learned from Gemini)'], check=True)
-        # Gunakan token bawaan GitHub Actions untuk push
         subprocess.run(['git', 'push'], check=True)
         print("[SUCCESS] Memori berhasil diunggah ke GitHub!")
     except Exception as e:
         print(f"[WARNING] Gagal push memori: {e}")
 
-# ==========================================
-# TELEGRAM & DOWNLOADER
-# ==========================================
 def get_oldest_telegram_link():
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/getUpdates?limit=100"
     try:
@@ -129,9 +116,6 @@ def generate_caption(yt_title, yt_desc):
     except: pass
     return "Bro, this clutch play is actually insane! 😱🔥 #HOK"
 
-# ==========================================
-# 🧠 AI VISION & LEARNING
-# ==========================================
 def ask_gemini_vision(page):
     print("[INFO] Memanggil Guru (Gemini Vision) untuk mencari tombol Post...")
     screenshot_path = "fb_screen.png"
@@ -145,9 +129,9 @@ def ask_gemini_vision(page):
         
         prompt = """
         Ini adalah screenshot halaman upload video Facebook. 
-        Tolong cari tombol 'Post' atau 'Posting' atau 'Bagikan'.
-        Jika tombol tersebut berwarna BIRU (aktif), berikan koordinat X dan Y-nya dalam format JSON: {"x": 123, "y": 456}.
-        Jika tombol masih ABU-ABU (disabled), balas dengan: {"status": "disabled"}.
+        Tolong cari tombol biru 'Post' atau 'Posting' atau 'Bagikan' yang ada di bagian bawah.
+        Jika tombol tersebut sudah menyala (biru), berikan koordinat X dan Y-nya dalam format JSON: {"x": 123, "y": 456}.
+        Jika tombol masih abu-abu atau tidak ada, balas dengan: {"status": "disabled"}.
         Jangan berikan teks lain selain JSON.
         """
         
@@ -158,6 +142,7 @@ def ask_gemini_vision(page):
             res = requests.post(url, json=payload, timeout=30)
             if res.status_code == 200:
                 text_response = res.json()['candidates'][0]['content']['parts'][0]['text'].strip()
+                print(f"[AI VISION] Respons: {text_response}")
                 json_match = re.search(r'\{.*\}', text_response)
                 if json_match:
                     data = json.loads(json_match.group())
@@ -170,11 +155,8 @@ def ask_gemini_vision(page):
     finally:
         if os.path.exists(screenshot_path): os.remove(screenshot_path)
 
-# ==========================================
-# PLAYWRIGHT UPLOADER (THE ULTIMATE FALLBACK)
-# ==========================================
 def upload_via_playwright(video_path, caption):
-    print("[INFO] Memulai Browser Automation (Sistem Pembelajaran)...")
+    print("[INFO] Memulai Browser Automation...")
     ui_memory = load_ui_memory()
     
     try:
@@ -199,8 +181,6 @@ def upload_via_playwright(video_path, caption):
             
             print(f"[INFO] Membuka Halaman Page ID: {FB_PAGE_ID}")
             page.goto(f"https://www.facebook.com/profile.php?id={FB_PAGE_ID}/videos", timeout=60000)
-            try: page.wait_for_load_state("networkidle", timeout=15000)
-            except: pass
             page.wait_for_timeout(5000) 
             
             print("[INFO] Mencari Tombol Upload...")
@@ -215,30 +195,37 @@ def upload_via_playwright(video_path, caption):
             print("[INFO] Mengetik Caption...")
             page.locator('[contenteditable="true"]').first.fill(caption)
             
-            print("[INFO] Menunggu Facebook memproses video (60s)...")
-            page.wait_for_timeout(60000) 
+            # ========================================================
+            # 🧠 SMART WAIT: MENUNGGU TOMBOL POST MUNCUL DI DOM
+            # ========================================================
+            print("[INFO] Menunggu Facebook selesai memproses video (Menunggu tombol Post muncul)...")
+            try:
+                # Menunggu hingga tombol Post benar-benar ada di halaman (bisa memakan waktu 2-5 menit)
+                page.wait_for_selector('div[role="button"]:has-text("Post"), div[role="button"]:has-text("Posting"), div[role="button"]:has-text("Bagikan")', state="attached", timeout=300000)
+                print("[INFO] Tombol Post terdeteksi di DOM!")
+            except Exception as e:
+                print(f"[WARNING] Waktu tunggu tombol Post habis: {e}")
+
+            page.wait_for_timeout(5000) # Jeda sebentar sebelum AI melihat
             
             # ========================================================
-            # 🧠 PROSES BELAJAR & MENGAJAR
+            # EKSEKUSI AI VISION + JS INJECTION FALLBACK
             # ========================================================
             post_success = False
             
-            # LANGKAH 1: Cek Memori (Apakah bot sudah pintar?)
+            # Coba Memori Dulu
             if "post_coords" in ui_memory:
                 coords = ui_memory["post_coords"]
-                print(f"[INFO] Memori ditemukan! Mencoba klik koordinat X:{coords['x']}, Y:{coords['y']}...")
+                print(f"[INFO] Memori ditemukan! Klik koordinat X:{coords['x']}, Y:{coords['y']}...")
                 page.mouse.click(coords['x'], coords['y'])
                 page.wait_for_timeout(10000)
-                
-                # Cek apakah berhasil (Modal tertutup)
                 if page.locator('[contenteditable="true"]').count() == 0:
-                    print("[SUCCESS] Memori bekerja sempurna! Tombol Post berhasil diklik tanpa Gemini.")
                     post_success = True
+                    print("[SUCCESS] Memori bekerja!")
                 else:
-                    print("[WARNING] Memori gagal (Facebook merubah UI). Menghapus memori lama...")
+                    print("[WARNING] Memori gagal. Memanggil Guru...")
                     del ui_memory["post_coords"]
             
-            # LANGKAH 2: Jika Memori Gagal atau Belum Ada, Panggil Guru (Gemini)
             if not post_success:
                 max_ai_retries = 5
                 for attempt in range(max_ai_retries):
@@ -246,37 +233,43 @@ def upload_via_playwright(video_path, caption):
                     ai_result = ask_gemini_vision(page)
                     
                     if ai_result == "disabled":
-                        print("[INFO] AI melihat tombol Post masih disabled. Menunggu 30 detik lagi...")
+                        print("[INFO] AI melihat tombol Post masih disabled. Menunggu 30 detik...")
                         page.wait_for_timeout(30000)
                         continue
-                        
                     elif isinstance(ai_result, tuple):
                         x, y = ai_result
                         print(f"[INFO] Guru menemukan koordinat X:{x}, Y:{y}. Mengklik...")
                         page.mouse.click(x, y)
                         page.wait_for_timeout(10000)
                         
-                        # Cek apakah berhasil
                         if page.locator('[contenteditable="true"]').count() == 0:
-                            print("[SUCCESS] Guru berhasil! Video terupload.")
-                            # SIMPAN KE MEMORI
+                            print("[SUCCESS] Guru berhasil!")
                             ui_memory["post_coords"] = {"x": x, "y": y}
                             save_ui_memory(ui_memory)
                             post_success = True
                             break
                     else:
-                        print("[WARNING] Guru buta atau error. Mencoba JS Injection...")
+                        print("[WARNING] Guru buta. Mencoba JS Injection...")
                         try:
                             js_script = "var b = document.querySelectorAll('div[role=\"button\"]'); for(var i=0; i<b.length; i++){ if(['Post','Posting','Bagikan'].includes(b[i].innerText.trim())){ b[i].click(); return true; } } return false;"
                             if page.evaluate(js_script): 
-                                print("[SUCCESS] JS Injection berhasil!")
+                                post_success = True
+                                break
+                        except: pass
+                        
+                        # Fallback: Tekan Enter pada keyboard
+                        print("[WARNING] JS gagal. Mencoba menekan tombol Enter...")
+                        try:
+                            page.keyboard.press("Enter")
+                            page.wait_for_timeout(5000)
+                            if page.locator('[contenteditable="true"]').count() == 0:
                                 post_success = True
                                 break
                         except: pass
                         page.wait_for_timeout(30000)
 
             if not post_success:
-                send_telegram_alert("❌ AI Vision dan Fallback JS gagal menemukan tombol Post.")
+                send_telegram_alert("❌ Semua metode (AI, JS, Enter) gagal menekan tombol Post.")
                 browser.close(); return False
 
             print("[INFO] Memverifikasi Upload...")
@@ -292,9 +285,6 @@ def upload_via_playwright(video_path, caption):
         send_telegram_alert(f"❌ Fatal Error: {str(e)[:50]}")
         return False
 
-# ==========================================
-# MAIN EXECUTION
-# ==========================================
 def main():
     check_reminders()
     if not check_fb_cookie_expiry(): return 
@@ -314,7 +304,6 @@ def main():
             if success and msg_id:
                 delete_telegram_message(msg_id, chat_id)
                 
-            # Jika ada memori baru, push ke GitHub
             if os.path.exists(MEMORY_FILE):
                 push_ui_memory_to_github()
                 
