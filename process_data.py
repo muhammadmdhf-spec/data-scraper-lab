@@ -151,16 +151,25 @@ def upload_via_playwright(video_path, caption):
                 
             print(f"[INFO] Membuka Halaman Page ID: {FB_PAGE_ID}")
             page.goto(f"https://www.facebook.com/profile.php?id={FB_PAGE_ID}/videos", timeout=60000)
-            page.wait_for_timeout(5000)
+            
+            # Menunggu halaman benar-benar stabil
+            try:
+                page.wait_for_load_state("networkidle", timeout=15000)
+            except:
+                print("[WARNING] Network tidak sepenuhnya idle, melanjutkan...")
+            
+            page.wait_for_timeout(5000) # Beri waktu tambahan untuk render React
             
             print("[INFO] Mencari Tombol Upload...")
-            # Selector yang lebih andal dan berlapis
+            # Daftar selector yang lebih lengkap (termasuk Bahasa Indonesia)
             upload_selectors = [
                 '*[aria-label="Photo/video"][role="button"]',
                 '*[aria-label="Photo/Video"][role="button"]',
+                '*[aria-label="Foto/video"][role="button"]',
                 '*[aria-label="Foto/Video"][role="button"]',
+                '*[aria-label="Video"][role="button"]',
                 'div[aria-label="Photo/video"]',
-                'text="Photo/video"'
+                'div[aria-label="Video"]'
             ]
             
             upload_btn = None
@@ -174,16 +183,26 @@ def upload_via_playwright(video_path, caption):
                 except: continue
 
             if not upload_btn:
-                send_telegram_alert("❌ Gagal menemukan tombol upload. Facebook mungkin mengubah UI.")
-                return False
-
-            # Gunakan FileChooser untuk menangani dialog file
-            with page.expect_file_chooser(timeout=10000) as fc_info:
-                upload_btn.click()
-            
-            file_chooser = fc_info.value
-            print("[INFO] Memasukkan file video 4K...")
-            file_chooser.set_files(video_path)
+                # FALLBACK: Jika tombol tidak ketemu, coba langsung cari input file
+                print("[WARNING] Tombol tidak ditemukan, mencoba fallback ke input file langsung...")
+                try:
+                    file_input = page.locator('input[type="file"]').first
+                    if file_input.count() > 0:
+                        print("[INFO] Menemukan input file langsung, memasukkan video...")
+                        file_input.set_input_files(video_path)
+                    else:
+                        send_telegram_alert("❌ Gagal menemukan tombol upload atau input file. Facebook mungkin mengubah UI total.")
+                        return False
+                except Exception as e:
+                    send_telegram_alert(f"❌ Gagal fallback upload: {e}")
+                    return False
+            else:
+                # Gunakan FileChooser jika tombol ditemukan
+                with page.expect_file_chooser(timeout=15000) as fc_info:
+                    upload_btn.click()
+                file_chooser = fc_info.value
+                print("[INFO] Memasukkan file video 4K...")
+                file_chooser.set_files(video_path)
             
             print("[INFO] Menunggu Facebook memproses video (60s)...")
             page.wait_for_timeout(60000) 
@@ -193,8 +212,10 @@ def upload_via_playwright(video_path, caption):
             page.wait_for_timeout(2000)
             
             print("[INFO] Menekan Tombol Posting...")
-            try: page.locator('*[aria-label="Post"][role="button"]').last.click(timeout=10000)
-            except: page.get_by_role("button", name=re.compile(r"Post|Posting|Bagikan", re.IGNORECASE)).last.click(timeout=10000)
+            try: 
+                page.locator('*[aria-label="Post"][role="button"]').last.click(timeout=10000)
+            except: 
+                page.get_by_role("button", name=re.compile(r"Post|Posting|Bagikan", re.IGNORECASE)).last.click(timeout=10000)
             
             print("[INFO] Memverifikasi Upload...")
             try:
