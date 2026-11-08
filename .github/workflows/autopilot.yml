@@ -37,28 +37,15 @@ jobs:
         wget -q https://github.com/Sanster/models/releases/download/add_big_lama/big-lama.pt
         cd ..
 
-    - name: Setup Cookies
+    - name: Setup Cookies (Pisah)
       env:
-        YT_COOKIES_B64: ${{ secrets.YT_COOKIES_B64 }}
+        FB_COOKIES: ${{ secrets.FB_COOKIES_B64 }}
+        BILI_COOKIES: ${{ secrets.BILI_COOKIES_B64 }}
       run: |
-        echo "$YT_COOKIES_B64" | base64 -d > cookies.txt
-
-    - name: Check Cookie Expiry (Alarm)
-      run: |
-        python -c "
-        import datetime
-        try:
-            with open('cookies.txt') as f:
-                for line in f:
-                    if line.startswith('#') or not line.strip(): continue
-                    parts = line.strip().split('\t')
-                    if len(parts) == 7 and parts[5] == 'c_user':
-                        exp = datetime.datetime.fromtimestamp(int(parts[4]))
-                        if exp < datetime.datetime.now():
-                            print('COOKIE_EXPIRED')
-                            exit(1)
-        except: pass
-        "
+        # Buat cookie FB
+        echo "$FB_COOKIES" | base64 -d > cookies_fb.txt
+        # Buat cookie Bilibili
+        echo "$BILI_COOKIES" | base64 -d > cookies_bili.txt
 
     - name: Execute Core Engine with Auto-Retry
       env:
