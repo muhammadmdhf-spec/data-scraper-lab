@@ -28,7 +28,7 @@ jobs:
         python -m pip install --upgrade yt-dlp
         pip install -r requirements.txt
         pip install torch torchvision transformers
-        pip install git+https://github.com/enesmsahin/simple-lama-inpainting.git
+        pip install simple-lama-inpainting
 
     - name: Clone LaMA Repository & Download Model
       run: |
@@ -42,9 +42,7 @@ jobs:
         FB_COOKIES: ${{ secrets.FB_COOKIES_B64 }}
         BILI_COOKIES: ${{ secrets.BILI_COOKIES_B64 }}
       run: |
-        # Buat cookie FB
         echo "$FB_COOKIES" | base64 -d > cookies_fb.txt
-        # Buat cookie Bilibili
         echo "$BILI_COOKIES" | base64 -d > cookies_bili.txt
 
     - name: Execute Core Engine with Auto-Retry
