@@ -1,3 +1,7 @@
 yt-dlp
 requests
-playwright
+opencv-python-headless
+numpy
+torch
+torchvision
+transformers
