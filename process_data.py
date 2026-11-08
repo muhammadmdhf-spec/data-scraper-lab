@@ -22,7 +22,6 @@ if os.path.exists(PROCESSED_FILE):
 else:
     processed_links = set()
 
-# --- LOCK UNTUK MEMASTIKAN HANYA SATU LAMA BERJALAN ---
 @contextlib.contextmanager
 def lama_lock(lock_file_path):
     lock_file = open(lock_file_path, "w")
@@ -64,9 +63,18 @@ def mark_as_processed(link):
 def delete_telegram_message(msg_id, chat_id):
     requests.get(f"https://api.telegram.org/bot{BOT_TOKEN}/deleteMessage?chat_id={chat_id}&message_id={msg_id}")
 
+# --- FUNGSI BARU UNTUK MEMILIH COOKIE SESUAI LINK ---
+def get_cookie_file(link):
+    if 'bilibili' in link or 'b23.tv' in link:
+        return 'cookies_bili.txt'
+    elif 'facebook' in link or 'fb.watch' in link:
+        return 'cookies_fb.txt'
+    return 'cookies_fb.txt' # Default
+
 def get_metadata(link):
+    cookie_file = get_cookie_file(link)
     try:
-        cmd = ['yt-dlp', '--dump-json', '--js-runtimes', 'deno', '--cookies', 'cookies.txt', link]
+        cmd = ['yt-dlp', '--dump-json', '--js-runtimes', 'deno', '--cookies', cookie_file, link]
         data = json.loads(subprocess.run(cmd, capture_output=True, text=True, check=True).stdout)
         title = data.get('title', 'Video')
         description = data.get('description', '')
@@ -77,8 +85,9 @@ def get_metadata(link):
     except: return "Video tanpa caption"
 
 def download_video(link):
+    cookie_file = get_cookie_file(link)
     for res in ['1440', '1080', '720']:
-        cmd = ['yt-dlp', '--js-runtimes', 'deno', '--cookies', 'cookies.txt', '-f', f'bestvideo[height<={res}]+bestaudio/best', '--merge-output-format', 'mp4', '--retries', '10', link, '-o', 'raw_video.mp4']
+        cmd = ['yt-dlp', '--js-runtimes', 'deno', '--cookies', cookie_file, '-f', f'bestvideo[height<={res}]+bestaudio/best', '--merge-output-format', 'mp4', '--retries', '10', link, '-o', 'raw_video.mp4']
         try:
             subprocess.run(cmd, check=True, capture_output=True, text=True)
             return True
@@ -131,7 +140,6 @@ def lama_inpaint_with_tmux(input_path, output_path, mask, max_frames_per_segment
     fps = cap.get(cv2.CAP_PROP_FPS)
     cap.release()
     
-    # Tentukan segmen
     segments = []
     for start in range(0, total_frames, max_frames_per_segment):
         end = min(start + max_frames_per_segment, total_frames)
@@ -147,12 +155,10 @@ def lama_inpaint_with_tmux(input_path, output_path, mask, max_frames_per_segment
         
         print(f"[INFO] Memproses segmen {idx}: frame {start} sampai {end}")
         
-        # Jalankan di dalam tmux
         session_name = f"lama_seg_{idx}"
         cmd = f"tmux new-session -d -s {session_name} 'python process_lama.py {input_path} {segment_file} {start} {end} {mask.shape[0]} {mask.shape[1]}'"
         subprocess.run(cmd, shell=True, check=True)
         
-        # Tunggu sampai selesai
         while True:
             result = subprocess.run(['tmux', 'has-session', '-t', session_name], capture_output=True)
             if result.returncode != 0:
@@ -161,7 +167,6 @@ def lama_inpaint_with_tmux(input_path, output_path, mask, max_frames_per_segment
         
         cleaned_segments.append(segment_file)
     
-    # Gabungkan semua segmen
     with open('concat_list.txt', 'w') as f:
         for seg in cleaned_segments:
             f.write(f"file '{seg}'\n")
@@ -214,7 +219,6 @@ def process_link(link, msg_id, chat_id):
             mark_as_processed(link)
             return False
         
-        # Gunakan lock untuk memastikan hanya satu LaMA berjalan
         with lama_lock("lama.lock"):
             lama_inpaint_with_tmux('cropped_wm.mp4', 'cleaned_wm.mp4', mask)
         
