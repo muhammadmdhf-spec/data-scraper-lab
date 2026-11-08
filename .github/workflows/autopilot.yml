@@ -1,19 +1,18 @@
-name: Automated Data Pipeline
+name: Ultimate Muse AI Watermark Remover
 
 on:
-  schedule:
-    # Jadwal WIB: 01:00, 05:00, 09:00, 13:00, 18:00, 22:00
-    - cron: '0 18,22,2,6,11,15 * * *'
   workflow_dispatch:
+  schedule:
+    - cron: '0 18,22,2,6,11,15 * * *'
 
 jobs:
   run-pipeline:
     runs-on: ubuntu-latest
+    timeout-minutes: 360
     if: github.actor == 'muhammadmdhf-spec' || github.event_name == 'schedule'
 
     steps:
-    - name: Checkout Repository
-      uses: actions/checkout@v4
+    - uses: actions/checkout@v4
 
     - name: Set up Python 3.10
       uses: actions/setup-python@v5
@@ -23,33 +22,49 @@ jobs:
     - name: Install System Dependencies
       run: |
         sudo apt-get update
-        sudo apt-get install -y ffmpeg
+        sudo apt-get install -y ffmpeg tmux
         curl -fsSL https://deno.land/install.sh | sh
         echo "$HOME/.deno/bin" >> $GITHUB_PATH
-        python -m pip install --upgrade pip
-        pip install --upgrade yt-dlp yt-dlp-ejs
+        python -m pip install --upgrade yt-dlp
+        pip install -r requirements.txt
+        pip install torch torchvision transformers
+        pip install git+https://github.com/enesmsahin/simple-lama-inpainting.git
 
-    - name: Install Python Dependencies & Browser
+    - name: Clone LaMA Repository & Download Model
       run: |
-        python -m pip install --upgrade pip
-        if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
-        # Instal Browser Playwright untuk Upload FB
-        playwright install --with-deps chromium
+        git clone https://github.com/D-Ogi/WatermarkRemover-AI.git
+        cd WatermarkRemover-AI
+        wget -q https://github.com/Sanster/models/releases/download/add_big_lama/big-lama.pt
+        cd ..
 
     - name: Setup Cookies
       env:
         YT_COOKIES_B64: ${{ secrets.YT_COOKIES_B64 }}
-        FB_COOKIES_B64: ${{ secrets.FB_COOKIES_B64 }}
       run: |
         echo "$YT_COOKIES_B64" | base64 -d > cookies.txt
-        echo "$FB_COOKIES_B64" | base64 -d > fb_cookies.txt
 
-    - name: Execute Core Engine
+    - name: Check Cookie Expiry (Alarm)
+      run: |
+        python -c "
+        import datetime
+        try:
+            with open('cookies.txt') as f:
+                for line in f:
+                    if line.startswith('#') or not line.strip(): continue
+                    parts = line.strip().split('\t')
+                    if len(parts) == 7 and parts[5] == 'c_user':
+                        exp = datetime.datetime.fromtimestamp(int(parts[4]))
+                        if exp < datetime.datetime.now():
+                            print('COOKIE_EXPIRED')
+                            exit(1)
+        except: pass
+        "
+
+    - name: Execute Core Engine with Auto-Retry
       env:
         TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
         TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        GEMINI_KEY_1: ${{ secrets.GEMINI_KEY_1 }}
-        GEMINI_KEY_2: ${{ secrets.GEMINI_KEY_2 }}
-        GEMINI_KEY_3: ${{ secrets.GEMINI_KEY_3 }}
       run: |
-        python process_data.py
+        for i in 1 2 3; do
+          python process_data.py && break || sleep 10
+        done
