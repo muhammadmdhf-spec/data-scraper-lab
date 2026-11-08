@@ -7,7 +7,7 @@ import time
 import cv2
 import numpy as np
 import torch
-from lama_inpaint.runtime import LamaInpaint
+from simple_lama_inpainting import SimpleLama
 import datetime
 import fcntl
 import contextlib
@@ -63,13 +63,12 @@ def mark_as_processed(link):
 def delete_telegram_message(msg_id, chat_id):
     requests.get(f"https://api.telegram.org/bot{BOT_TOKEN}/deleteMessage?chat_id={chat_id}&message_id={msg_id}")
 
-# --- FUNGSI BARU UNTUK MEMILIH COOKIE SESUAI LINK ---
 def get_cookie_file(link):
     if 'bilibili' in link or 'b23.tv' in link:
         return 'cookies_bili.txt'
     elif 'facebook' in link or 'fb.watch' in link:
         return 'cookies_fb.txt'
-    return 'cookies_fb.txt' # Default
+    return 'cookies_fb.txt'
 
 def get_metadata(link):
     cookie_file = get_cookie_file(link)
@@ -131,7 +130,7 @@ def create_mask(cropped_video):
 
 def lama_inpaint_with_tmux(input_path, output_path, mask, max_frames_per_segment=1000):
     print("[INFO] Langkah 4: LaMA Inpainting dengan tmux & resume...")
-    lama = LamaInpaint(device='cpu')
+    lama = SimpleLama()
     
     cap = cv2.VideoCapture(input_path)
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
