@@ -2,74 +2,43 @@ import subprocess
 import os
 import requests
 import json
-import random
 import re
+import time
+import cv2
+import numpy as np
+import torch
+from lama_inpaint.runtime import LamaInpaint
 import datetime
-import base64
-from playwright.sync_api import sync_playwright
+import fcntl
+import contextlib
 
-# --- KONFIGURASI ---
 BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
 CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
-BG_IMAGE = "IMG-20261027-WA6038.jpg"
-FB_PAGE_ID = "110050601565770"
-STATE_FILE = "state.json"
-MEMORY_FILE = "ui_memory.json"
 
-def send_telegram_alert(message, retries=3):
-    print(f"[ALERT] {message}")
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-    for i in range(retries):
-        try: 
-            res = requests.post(url, data={"chat_id": CHAT_ID, "text": message}, timeout=10)
-            if res.status_code == 200: break
-        except: pass
+PROCESSED_FILE = "processed_links.txt"
+if os.path.exists(PROCESSED_FILE):
+    with open(PROCESSED_FILE, "r") as f:
+        processed_links = set(line.strip() for line in f)
+else:
+    processed_links = set()
 
-def check_reminders():
-    today = datetime.date.today()
-    if not os.path.exists(STATE_FILE):
-        with open(STATE_FILE, "w") as f: json.dump({"start_date": str(today)}, f)
-        return
-    with open(STATE_FILE, "r") as f: state = json.load(f)
-    start_date = datetime.datetime.strptime(state.get("start_date", str(today)), "%Y-%m-%d").date()
-    days = (today - start_date).days
-    if days == 14: send_telegram_alert("🚨 LAKSAMAN! Sudah 2 MINGGU. Waktunya ganti Cookie Facebook (FB_COOKIES_B64)!")
-    if days == 21: send_telegram_alert("🚨 LAKSAMAN! Sudah 3 MINGGU. Waktunya ganti Cookie YouTube (YT_COOKIES_B64)!")
-
-def check_fb_cookie_expiry():
-    if not os.path.exists("fb_cookies.txt"): return False
-    with open("fb_cookies.txt", "r") as f:
-        for line in f:
-            if line.startswith("#") or not line.strip(): continue
-            parts = line.strip().split("\t")
-            if len(parts) == 7 and parts[5] == "c_user": 
-                if datetime.datetime.fromtimestamp(int(parts[4])) < datetime.datetime.now():
-                    send_telegram_alert("🚨 Cookie FB sudah EXPIRED! Tolong ganti FB_COOKIES_B64!")
-                    return False
-    return True
-
-def load_ui_memory():
-    if os.path.exists(MEMORY_FILE):
-        with open(MEMORY_FILE, "r") as f: return json.load(f)
-    return {}
-
-def save_ui_memory(data):
-    with open(MEMORY_FILE, "w") as f: json.dump(data, f)
-    print("[INFO] Memori UI berhasil disimpan.")
-
-def push_ui_memory_to_github():
-    print("[INFO] Mengunggah memori ke GitHub...")
+# --- LOCK UNTUK MEMASTIKAN HANYA SATU LAMA BERJALAN ---
+@contextlib.contextmanager
+def lama_lock(lock_file_path):
+    lock_file = open(lock_file_path, "w")
     try:
-        subprocess.run(['git', 'config', '--global', 'user.name', 'AutoBot'], check=True)
-        subprocess.run(['git', 'config', '--global', 'user.email', 'bot@autobot.com'], check=True)
-        subprocess.run(['git', 'add', MEMORY_FILE], check=True)
-        subprocess.run(['git', 'commit', '-m', 'Update UI Memory (Learned from Gemini)'], check=True)
-        subprocess.run(['git', 'push'], check=True)
-        print("[SUCCESS] Memori berhasil diunggah ke GitHub!")
-    except Exception as e:
-        print(f"[WARNING] Gagal push memori: {e}")
+        fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        yield
+    finally:
+        fcntl.flock(lock_file, fcntl.LOCK_UN)
+        lock_file.close()
 
-def get_oldest_telegram_link():
+def send_telegram_alert(message):
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+    try: requests.post(url, data={"chat_id": CHAT_ID, "text": message}, timeout=10)
+    except: pass
+
+def get_new_telegram_links():
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/getUpdates?limit=100"
     try:
         res = requests.get(url).json()
@@ -78,224 +47,212 @@ def get_oldest_telegram_link():
             if msg and 'text' in msg:
                 text = msg['text']
                 if str(msg['chat']['id']) == str(CHAT_ID) or str(msg['chat']['id']) == str(CHAT_ID).replace('-100', '') or msg['chat']['type'] == 'private':
-                    match = re.search(r'(https?://(?:www\.)?(?:youtube\.com|youtu\.be)/\S+)', text)
-                    if match: return match.group(1), msg['message_id'], msg['chat']['id']
+                    match = re.search(r'(https?://(?:www\.)?(?:bilibili\.com|b23\.tv|facebook\.com|fb\.watch)/\S+)', text)
+                    if match:
+                        link = match.group(1)
+                        if link not in processed_links:
+                            return link, msg['message_id'], msg['chat']['id']
     except: pass
     return None, None, None
+
+def mark_as_processed(link):
+    processed_links.add(link)
+    with open(PROCESSED_FILE, "w") as f:
+        for l in processed_links:
+            f.write(l + "\n")
 
 def delete_telegram_message(msg_id, chat_id):
     requests.get(f"https://api.telegram.org/bot{BOT_TOKEN}/deleteMessage?chat_id={chat_id}&message_id={msg_id}")
 
-def download_video(url):
-    print("[INFO] Downloading 1080p Video...")
-    cmd = ['yt-dlp', '--js-runtimes', 'deno', '--cookies', 'cookies.txt', '-f', 'bestvideo[height<=1080]+bestaudio/best', '--merge-output-format', 'mp4', '--retries', '10', url, '-o', 'raw_video.mp4']
+def get_metadata(link):
+    try:
+        cmd = ['yt-dlp', '--dump-json', '--js-runtimes', 'deno', '--cookies', 'cookies.txt', link]
+        data = json.loads(subprocess.run(cmd, capture_output=True, text=True, check=True).stdout)
+        title = data.get('title', 'Video')
+        description = data.get('description', '')
+        tags = data.get('tags', [])
+        caption = f"{title}\n\n{description[:200]}...\n\n"
+        if tags: caption += " ".join([f"#{t.replace(' ', '')}" for t in tags[:10]])
+        return caption
+    except: return "Video tanpa caption"
+
+def download_video(link):
+    for res in ['1440', '1080', '720']:
+        cmd = ['yt-dlp', '--js-runtimes', 'deno', '--cookies', 'cookies.txt', '-f', f'bestvideo[height<={res}]+bestaudio/best', '--merge-output-format', 'mp4', '--retries', '10', link, '-o', 'raw_video.mp4']
+        try:
+            subprocess.run(cmd, check=True, capture_output=True, text=True)
+            return True
+        except: continue
+    return False
+
+def crop_watermark(input_path, output_path, x, y, w, h):
+    print("[INFO] Langkah 2: Memotong area watermark...")
+    cmd = ['ffmpeg', '-y', '-i', input_path, '-vf', f'crop={w}:{h}:{x}:{y}', '-c:v', 'libx264', '-crf', '18', output_path]
     subprocess.run(cmd, check=True, capture_output=True, text=True)
 
-def process_video():
-    print("[INFO] Editing Video (1080p High Bitrate 12M, H.264)...")
-    filter_complex = "[1:v]scale=1080:-1[fg];[0:v][fg]overlay=(W-w)/2:(H-h)/2:shortest=1"
-    # BITRATE DIUBAH MENJADI 12M
-    cmd = ['ffmpeg', '-y', '-loop', '1', '-i', BG_IMAGE, '-i', 'raw_video.mp4', '-filter_complex', filter_complex, '-c:v', 'libx264', '-preset', 'superfast', '-b:v', '12M', '-maxrate', '15M', '-bufsize', '30M', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-b:a', '192k', 'final_video.mp4']
-    subprocess.run(cmd, check=True)
-    return "final_video.mp4"
-
-def get_yt_metadata(url):
-    try:
-        cmd = ['yt-dlp', '--dump-json', '--js-runtimes', 'deno', '--cookies', 'cookies.txt', url]
-        data = json.loads(subprocess.run(cmd, capture_output=True, text=True, check=True).stdout)
-        return data.get('title', 'HOK Gameplay'), data.get('description', '')[:200]
-    except: return "HOK Gameplay", ""
-
-def generate_caption(yt_title, yt_desc):
-    api_keys = [os.environ.get("GEMINI_KEY_1"), os.environ.get("GEMINI_KEY_2"), os.environ.get("GEMINI_KEY_3")]
-    valid_keys = [k for k in api_keys if k]
-    if not valid_keys: return "Bro this gameplay is insane! 💀 #HOK #HonorOfKings"
-    prompt = f"YT Title: '{yt_title}' Desc: '{yt_desc}'. Write a 1-sentence clickbait American slang caption for FB Reels. Max 125 chars. 3 viral hashtags. Sound like a hyped gamer, NOT an AI."
-    try:
-        res = requests.post(f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={random.choice(valid_keys)}", json={"contents": [{"parts": [{"text": prompt}]}]}, timeout=15)
-        if res.status_code == 200: return res.json()['candidates'][0]['content']['parts'][0]['text'].strip().replace('"', '')
-    except: pass
-    return "Bro, this clutch play is actually insane! 😱🔥 #HOK"
-
-def ask_gemini_vision(page):
-    print("[INFO] Memanggil Guru (Gemini Vision) untuk mencari tombol Post...")
-    screenshot_path = "fb_screen.png"
-    try:
-        page.screenshot(path=screenshot_path)
-        with open(screenshot_path, "rb") as image_file:
-            encoded_string = base64.b64encode(image_file.read()).decode('utf-8')
-        
-        api_keys = [os.environ.get("GEMINI_KEY_1"), os.environ.get("GEMINI_KEY_2"), os.environ.get("GEMINI_KEY_3")]
-        valid_keys = [k for k in api_keys if k]
-        
-        prompt = """
-        Ini adalah screenshot halaman upload video Facebook. 
-        Tolong cari tombol biru 'Post' atau 'Posting' atau 'Bagikan' yang ada di bagian bawah.
-        Jika tombol tersebut sudah menyala (biru), berikan koordinat X dan Y-nya dalam format JSON: {"x": 123, "y": 456}.
-        Jika tombol masih abu-abu atau tidak ada, balas dengan: {"status": "disabled"}.
-        Jangan berikan teks lain selain JSON.
-        """
-        
-        payload = {"contents": [{"parts": [{"text": prompt}, {"inline_data": {"mime_type": "image/png", "data": encoded_string}}]}]}
-        
-        for key in valid_keys:
-            url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={key}"
-            res = requests.post(url, json=payload, timeout=30)
-            if res.status_code == 200:
-                text_response = res.json()['candidates'][0]['content']['parts'][0]['text'].strip()
-                print(f"[AI VISION] Respons: {text_response}")
-                json_match = re.search(r'\{.*\}', text_response)
-                if json_match:
-                    data = json.loads(json_match.group())
-                    if "x" in data and "y" in data: return data["x"], data["y"]
-                    elif data.get("status") == "disabled": return "disabled"
-        return None
-    except Exception as e:
-        print(f"[ERROR] AI Vision Exception: {e}")
-        return None
-    finally:
-        if os.path.exists(screenshot_path): os.remove(screenshot_path)
-
-def upload_via_playwright(video_path, caption):
-    print("[INFO] Memulai Browser Automation (MODE MEDITASI 2 JAM)...")
-    ui_memory = load_ui_memory()
+def create_mask(cropped_video):
+    print("[INFO] Langkah 3: Membuat masker otomatis...")
+    cap = cv2.VideoCapture(cropped_video)
+    frames = []
+    count = 0
+    while cap.isOpened() and count < 7:
+        ret, frame = cap.read()
+        if not ret: break
+        frames.append(frame)
+        count += 1
+    cap.release()
     
-    try:
-        with sync_playwright() as p:
-            browser = p.chromium.launch(headless=True)
-            context = browser.new_context(
-                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-                viewport={"width": 1920, "height": 1080}
-            )
-            
-            cookies = []
-            with open("fb_cookies.txt", "r", encoding="utf-8") as f:
-                for line in f:
-                    if line.startswith("#") or not line.strip(): continue
-                    parts = line.strip().split("\t")
-                    if len(parts) == 7:
-                        cookies.append({"name": parts[5], "value": parts[6], "domain": parts[0], "path": parts[2], "secure": parts[3] == "TRUE", "expires": float(parts[4]) if parts[4] else -1})
-            
-            context.add_cookies(cookies)
-            page = context.new_page()
-            page.on("dialog", lambda dialog: dialog.accept())
-            
-            print(f"[INFO] Membuka Halaman Page ID: {FB_PAGE_ID}")
-            page.goto(f"https://www.facebook.com/profile.php?id={FB_PAGE_ID}/videos", timeout=60000)
-            page.wait_for_timeout(5000) 
-            
-            print("[INFO] Mencari Tombol Upload...")
-            upload_btn = page.locator('*[aria-label="Foto/video"][role="button"], *[aria-label="Photo/video"][role="button"]').first
-            if upload_btn.is_visible():
-                with page.expect_file_chooser(timeout=10000) as fc_info:
-                    upload_btn.click(force=True)
-                fc_info.value.set_files(video_path)
-            else:
-                page.locator('input[type="file"]').first.set_input_files(video_path)
-
-            print("[INFO] Mengetik Caption...")
-            page.locator('[contenteditable="true"]').first.fill(caption)
-            
-            # ========================================================
-            # 🧠 MODE MEDITASI: MENUNGGU SAMPAI 2 JAM
-            # ========================================================
-            print("[INFO] Menunggu Facebook selesai memproses video (Hingga 2 Jam)...")
-            
-            post_success = False
-            # Loop 2 jam (120 menit = 7200 detik). Kita cek setiap 15 detik = 480 kali cek.
-            
-            for check_count in range(480):
-                # Coba Memori Dulu
-                if "post_coords" in ui_memory:
-                    coords = ui_memory["post_coords"]
-                    print(f"[INFO] Cek ke-{check_count+1}: Mencoba klik koordinat memori X:{coords['x']}, Y:{coords['y']}...")
-                    try:
-                        page.mouse.click(coords['x'], coords['y'])
-                        page.wait_for_timeout(5000)
-                        if page.locator('[contenteditable="true"]').count() == 0:
-                            post_success = True
-                            print("[SUCCESS] Memori bekerja! Video terupload.")
-                            break
-                    except: pass
-                
-                if not post_success:
-                    # Tanya AI setiap 1 menit (4 kali cek), bukan setiap 15 detik agar kuota hemat
-                    if check_count % 4 == 0:
-                        print(f"[INFO] Memanggil Guru (AI Vision), Cek ke-{check_count+1}...")
-                        ai_result = ask_gemini_vision(page)
-                        
-                        if isinstance(ai_result, tuple):
-                            x, y = ai_result
-                            print(f"[INFO] Guru menemukan tombol X:{x}, Y:{y}. Mengklik...")
-                            page.mouse.click(x, y)
-                            page.wait_for_timeout(5000)
-                            if page.locator('[contenteditable="true"]').count() == 0:
-                                print("[SUCCESS] Guru berhasil!")
-                                ui_memory["post_coords"] = {"x": x, "y": y}
-                                save_ui_memory(ui_memory)
-                                post_success = True
-                                break
-                        else:
-                            print("[WARNING] Guru melihat tombol masih disabled. Lanjut menunggu...")
-                            
-                            # Fallback JS jika AI bilang disabled
-                            try:
-                                js_script = "var b = document.querySelectorAll('div[role=\"button\"]'); for(var i=0; i<b.length; i++){ if(['Post','Posting','Bagikan'].includes(b[i].innerText.trim())){ b[i].click(); return true; } } return false;"
-                                if page.evaluate(js_script): 
-                                    page.wait_for_timeout(5000)
-                                    if page.locator('[contenteditable="true"]').count() == 0:
-                                        post_success = True
-                                        break
-                            except: pass
-                
-                page.wait_for_timeout(15000) # Tunggu 15 detik sebelum cek lagi
-
-            if not post_success:
-                send_telegram_alert("❌ Setelah menunggu 2 JAM, tombol Post tetap tidak mau diklik. Facebook mungkin menolak video sebesar ini.")
-                browser.close(); return False
-
-            print("[INFO] Memverifikasi Upload...")
-            page.wait_for_timeout(15000) 
-            
-            if page.locator('[contenteditable="true"]').count() == 0:
-                browser.close(); return True
-                
-            send_telegram_alert("⚠️ Tombol diklik, tapi verifikasi visual gagal. Cek FB manual.")
-            browser.close(); return False
-            
-    except Exception as e:
-        send_telegram_alert(f"❌ Fatal Error: {str(e)[:50]}")
-        return False
-
-def main():
-    check_reminders()
-    if not check_fb_cookie_expiry(): return 
+    if len(frames) < 2: return None
     
-    link, msg_id, chat_id = get_oldest_telegram_link()
-    if not link: return
+    std = np.std(frames, axis=0).mean(axis=2)
+    static_pixels = (std < 15).astype(np.uint8) * 255
+    
+    hsv = cv2.cvtColor(frames[0], cv2.COLOR_BGR2HSV)
+    bright = ((hsv[:,:,2] > 150) & (hsv[:,:,1] < 90)).astype(np.uint8) * 255
+    
+    mask = cv2.bitwise_and(static_pixels, bright)
+    
+    kernel = np.ones((3,3), np.uint8)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
+    mask = cv2.dilate(mask, kernel, iterations=3)
+    
+    cv2.imwrite("mask_check.png", mask)
+    
+    return mask
 
-    try:
-        yt_title, yt_desc = get_yt_metadata(link)
-        download_video(link)
-        final_video = process_video()
+def lama_inpaint_with_tmux(input_path, output_path, mask, max_frames_per_segment=1000):
+    print("[INFO] Langkah 4: LaMA Inpainting dengan tmux & resume...")
+    lama = LamaInpaint(device='cpu')
+    
+    cap = cv2.VideoCapture(input_path)
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    fps = cap.get(cv2.CAP_PROP_FPS)
+    cap.release()
+    
+    # Tentukan segmen
+    segments = []
+    for start in range(0, total_frames, max_frames_per_segment):
+        end = min(start + max_frames_per_segment, total_frames)
+        segments.append((start, end))
+    
+    cleaned_segments = []
+    for idx, (start, end) in enumerate(segments):
+        segment_file = f"clean_segment_{idx:03d}.h264"
+        if os.path.exists(segment_file):
+            print(f"[INFO] Segmen {idx} sudah ada, lanjut...")
+            cleaned_segments.append(segment_file)
+            continue
         
-        if final_video:
-            caption = generate_caption(yt_title, yt_desc)
-            success = upload_via_playwright(final_video, caption)
-            
-            if success and msg_id:
-                delete_telegram_message(msg_id, chat_id)
-                
-            if os.path.exists(MEMORY_FILE):
-                push_ui_memory_to_github()
+        print(f"[INFO] Memproses segmen {idx}: frame {start} sampai {end}")
+        
+        # Jalankan di dalam tmux
+        session_name = f"lama_seg_{idx}"
+        cmd = f"tmux new-session -d -s {session_name} 'python process_lama.py {input_path} {segment_file} {start} {end} {mask.shape[0]} {mask.shape[1]}'"
+        subprocess.run(cmd, shell=True, check=True)
+        
+        # Tunggu sampai selesai
+        while True:
+            result = subprocess.run(['tmux', 'has-session', '-t', session_name], capture_output=True)
+            if result.returncode != 0:
+                break
+            time.sleep(10)
+        
+        cleaned_segments.append(segment_file)
+    
+    # Gabungkan semua segmen
+    with open('concat_list.txt', 'w') as f:
+        for seg in cleaned_segments:
+            f.write(f"file '{seg}'\n")
+    
+    subprocess.run(['ffmpeg', '-y', '-f', 'concat', '-safe', '0', '-i', 'concat_list.txt', '-c', 'copy', output_path], check=True)
+    os.remove('concat_list.txt')
+    for seg in cleaned_segments:
+        try: os.remove(seg)
+        except: pass
+    
+    return True
+
+def overlay_back(original_path, cleaned_path, output_path, x, y):
+    print("[INFO] Langkah 5: Menempelkan kembali (presisi piksel)...")
+    cmd = ['ffmpeg', '-y', '-i', original_path, '-i', cleaned_path, '-filter_complex', f'[0:v][1:v]overlay={x}:{y}', '-c:v', 'libx264', '-crf', '20', '-pix_fmt', 'yuv420p', '-c:a', 'copy', output_path]
+    subprocess.run(cmd, check=True, capture_output=True, text=True)
+
+def split_video():
+    cmd = ['ffmpeg', '-y', '-i', 'clean_video.mp4', '-c', 'copy', '-map', '0', '-segment_time', '30', '-f', 'segment', 'part_%03d.mp4']
+    subprocess.run(cmd, check=True, capture_output=True, text=True)
+    return sorted([f for f in os.listdir('.') if f.startswith('part_') and f.endswith('.mp4')])
+
+def send_to_telegram(files, caption):
+    send_telegram_alert(f"📝 CAPTION & HASHTAG:\n\n{caption}")
+    time.sleep(2)
+    for i, file in enumerate(files, 1):
+        send_telegram_alert(f"PART {i}")
+        url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendVideo"
+        try:
+            with open(file, 'rb') as video:
+                files_data = {'video': video}
+                data = {'chat_id': CHAT_ID, 'supports_streaming': 'true'}
+                requests.post(url, data=data, files=files_data, timeout=120)
+        except: pass
+        time.sleep(1)
+
+def process_link(link, msg_id, chat_id):
+    try:
+        caption = get_metadata(link)
+        if not download_video(link):
+            send_telegram_alert("❌ Gagal download video.")
+            mark_as_processed(link)
+            return False
+        
+        x, y, w, h = 20, 20, 340, 100
+        crop_watermark('raw_video.mp4', 'cropped_wm.mp4', x, y, w, h)
+        mask = create_mask('cropped_wm.mp4')
+        if mask is None:
+            send_telegram_alert("❌ Gagal membuat masker.")
+            mark_as_processed(link)
+            return False
+        
+        # Gunakan lock untuk memastikan hanya satu LaMA berjalan
+        with lama_lock("lama.lock"):
+            lama_inpaint_with_tmux('cropped_wm.mp4', 'cleaned_wm.mp4', mask)
+        
+        overlay_back('raw_video.mp4', 'cleaned_wm.mp4', 'clean_video.mp4', x, y)
+        
+        files = split_video()
+        if files:
+            send_to_telegram(files, caption)
+            if msg_id: delete_telegram_message(msg_id, chat_id)
+            send_telegram_alert("✅ Semua potongan terkirim. Muse AI, silakan rakit dan upload!")
+            mark_as_processed(link)
+            return True
+        else:
+            send_telegram_alert("❌ Tidak ada file yang dihasilkan.")
+            mark_as_processed(link)
+            return False
                 
     except Exception as e: 
-        print(f"[ERROR] Main Error: {e}")
+        send_telegram_alert(f"❌ Gagal memproses: {e}")
+        mark_as_processed(link)
+        return False
     finally:
-        for f in ['raw_video.mp4', 'final_video.mp4', 'audio.wav', 'fb_screen.png']:
-            if os.path.exists(f): 
+        for f in os.listdir('.'):
+            if f.startswith('part_') or f.startswith('clean_segment_') or f in ['raw_video.mp4', 'clean_video.mp4', 'cropped_wm.mp4', 'cleaned_wm.mp4', 'mask_check.png']:
                 try: os.remove(f)
                 except: pass
+
+def main():
+    while True:
+        link, msg_id, chat_id = get_new_telegram_links()
+        if not link:
+            print("[INFO] Tidak ada link baru. Tidur.")
+            break
+        
+        print(f"[INFO] Memproses link: {link}")
+        process_link(link, msg_id, chat_id)
+        
+        time.sleep(5)
 
 if __name__ == "__main__":
     main()
