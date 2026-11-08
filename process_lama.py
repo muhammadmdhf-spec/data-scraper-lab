@@ -11,7 +11,7 @@ def main():
     mask_h = int(sys.argv[5])
     mask_w = int(sys.argv[6])
     
-    # Perbaikan Masalah 1: Load masker asli yang dibuat oleh process_data.py
+    # Load masker asli
     mask = cv2.imread('mask_check.png', cv2.IMREAD_GRAYSCALE)
     
     if mask is None:
@@ -27,7 +27,7 @@ def main():
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     fps = cap.get(cv2.CAP_PROP_FPS)
     
-    # Codec H264 tetap dipertahankan sesuai perintah Raja
+    # Codec H264 tetap
     fourcc = cv2.VideoWriter_fourcc(*'h264')
     out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
     
