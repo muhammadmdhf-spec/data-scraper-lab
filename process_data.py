@@ -134,9 +134,6 @@ def lama_inpaint_with_tmux(input_path, output_path, mask, max_frames_per_segment
     
     cap = cv2.VideoCapture(input_path)
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    fps = cap.get(cv2.CAP_PROP_FPS)
     cap.release()
     
     segments = []
@@ -146,7 +143,7 @@ def lama_inpaint_with_tmux(input_path, output_path, mask, max_frames_per_segment
     
     cleaned_segments = []
     for idx, (start, end) in enumerate(segments):
-        segment_file = f"clean_segment_{idx:03d}.h264"
+        segment_file = f"clean_segment_{idx:03d}.mp4"
         if os.path.exists(segment_file):
             print(f"[INFO] Segmen {idx} sudah ada, lanjut...")
             cleaned_segments.append(segment_file)
